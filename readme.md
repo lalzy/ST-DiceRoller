@@ -29,3 +29,12 @@ Or install manually: copy this folder into `SillyTavern/data/default-user/extens
 
 ## Notes
 - Completely vibe-coded. 0 Human reading of the code, and not battle tested yet.
+
+
+## Existing sister extensions:
+- [Gurps Stat-sheet](https://github.com/lalzy/ST-NPCBook-Gurps) - Allows rolling with the character sheet 
+
+Images of the Roll Dice with Gurps book stat-sheet enabled(for the user, NOT plugin, plugin can be enabled and not have this selection):
+
+![Skill Roll](image2.png)
+![Combat Roll](image3.png)

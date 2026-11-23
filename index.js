@@ -84,18 +84,20 @@ function parseTarget(v) {
 
 /**
  * Roll and build the text inserted into the chat input.
- * @param {{skill?: string, count: number, die: number, cmp?: string, target?: string|number}} o
+ * @param {{skill?: string, count: number, die: number, cmp?: string, target?: string|number, rules?: string,
+ *          damage?: {add?: number, type?: string, mult?: number, dr?: number, vs?: string}}} o
  * @param {number[]} [forced] dice results (for tests)
  */
 export function buildRollText(o, forced) {
     const n = clampCount(o.count);
     const d = validDie(o.die) ?? 20;
     const name = String(o.skill ?? '').replace(/\s+/g, ' ').trim();
-    const target = parseTarget(o.target);
-    const cmp = validCmp(o.cmp) ?? '>=';
     const dice = forced ?? Array.from({ length: n }, () => rollDie(d));
     const total = dice.reduce((a, b) => a + b, 0);
+    if (o.damage) return damageText(name, n, d, dice, total, o.damage);
 
+    const target = parseTarget(o.target);
+    const cmp = validCmp(o.cmp) ?? '>=';
     const label = `${name ? `${name} Roll` : 'Roll'} (${n}d${d}${target !== null ? ` vs ${cmp} ${target}` : ''})`;
     const math = n > 1 ? `${dice.join(' + ')} = ${total}` : `${total}`;
     let verdict = '';
@@ -105,6 +107,36 @@ export function buildRollText(o, forced) {
             : ` (${compare(total, cmp, target) ? 'Success' : 'Failure'})`;
     }
     return `${label}: ${math}${verdict}`;
+}
+
+function signedAdd(a) { return a ? (a > 0 ? `+${a}` : `${a}`) : ''; }
+
+/**
+ * Damage roll, e.g.
+ *   Bob's Smithing hammer Damage vs Seraphina (2d+1 cr, DR 2): 4 + 5 + 1 = 10 cr → 8 injury
+ * GURPS: minimum 1 damage (0 for crushing); penetrating = damage − DR; injury = penetrating × wound multiplier (rounded down, at least 1 if it penetrates).
+ */
+function damageText(name, n, d, dice, sum, dmg) {
+    const add = Math.trunc(Number(dmg.add) || 0);
+    const type = String(dmg.type || '').trim();
+    const dr = Math.max(0, Math.trunc(Number(dmg.dr) || 0));
+    const mult = Number(dmg.mult) || 1;
+    const vs = String(dmg.vs || '').trim();
+    const minDmg = type === 'cr' ? 0 : 1;
+    const total = Math.max(minDmg, sum + add);
+    const diceLabel = `${n}d${d === 6 ? '' : d}${signedAdd(add)}${type ? ` ${type}` : ''}`;
+    const label = `${name || 'Damage'}${vs ? ` vs ${vs}` : ''} (${diceLabel}${vs ? `, DR ${dr}` : ''})`;
+    const sumTxt = dice.length === 1 && !add ? '' : `${dice.join(' + ')}${add ? ` ${add > 0 ? '+' : '-'} ${Math.abs(add)}` : ''} = `;
+    const math = `${sumTxt}${total}${type ? ` ${type}` : ''}`;
+    if (!vs) return `${label}: ${math}`;
+    const pen = Math.max(0, total - dr);
+    if (pen <= 0) return `${label}: ${math} → no penetration`;
+    const injury = Math.max(1, Math.floor(pen * mult));
+    const steps = [];
+    if (dr > 0) steps.push(`${pen} penetrating`);
+    if (mult !== 1) steps.push(steps.length ? `× ${mult}` : `${pen} × ${mult}`);
+    const result = `→ ${steps.length ? `${steps.join(' ')} = ` : ''}${injury} injury`;
+    return `${label}: ${math} ${result}`;
 }
 
 /** GURPS 4e success roll: criticals and margin (Basic Set, p. 347–348). */
@@ -122,6 +154,11 @@ function previewText(o) {
     const n = clampCount(o.count);
     const d = validDie(o.die) ?? 20;
     const name = String(o.skill ?? '').replace(/\s+/g, ' ').trim();
+    if (o.damage) {
+        const add = Math.trunc(Number(o.damage.add) || 0);
+        const vs = String(o.damage.vs || '').trim();
+        return `${name || 'Damage'}${vs ? ` vs ${vs}` : ''} (${n}d${d === 6 ? '' : d}${signedAdd(add)}${o.damage.type ? ` ${o.damage.type}` : ''}${vs ? `, DR ${o.damage.dr || 0}` : ''}): …`;
+    }
     const target = parseTarget(o.target);
     return `${name ? `${name} Roll` : 'Roll'} (${n}d${d}${target !== null ? ` vs ${o.cmp} ${target}` : ''}): …`;
 }
@@ -132,7 +169,10 @@ function sourceCharacters() {
     for (const src of sources.values()) {
         try {
             for (const ch of src.getCharacters() || []) {
-                if (ch && Array.isArray(ch.rollables) && ch.rollables.length) out.push({ ...ch, key: `${src.id}:${ch.key}`, source: src });
+                if (!ch) continue;
+                const hasSkill = Array.isArray(ch.rollables) && ch.rollables.length;
+                const hasCombat = Array.isArray(ch.combat) && ch.combat.length;
+                if (hasSkill || hasCombat) out.push({ ...ch, rollables: ch.rollables || [], combat: ch.combat || [], key: `${src.id}:${ch.key}`, source: src });
             }
         } catch (e) { console.warn('[RollDice] source failed', src.id, e); }
     }
@@ -160,18 +200,33 @@ function dieOptions(selected) {
     return DIE_TYPES.map(d => `<option value="${d}"${d === Number(selected) ? ' selected' : ''}>d${d}</option>`).join('');
 }
 
+function groupedOptions(items, label) {
+    const groups = [];
+    items.forEach((r, i) => {
+        let g = groups.find(x => x.name === (r.group || ''));
+        if (!g) groups.push(g = { name: r.group || '', items: [] });
+        g.items.push({ r, i });
+    });
+    return '<option value="">— choose —</option>' + groups.map(g => {
+        const opts = g.items.map(({ r, i }) => `<option value="${i}">${esc(label(r))}</option>`).join('');
+        return g.name ? `<optgroup label="${esc(g.name)}">${opts}</optgroup>` : opts;
+    }).join('');
+}
+
 async function openRollPopup(prefill = {}) {
     const c = ctx();
     const s = settings();
     const preset0 = PRESETS.includes(prefill.preset) ? prefill.preset : 'skill';
-    const state = { preset: preset0, skill: '', target: '', rules: null, ...s[preset0] };
+    const state = { preset: preset0, skill: '', target: '', rules: null, damage: null, ...s[preset0] };
     for (const k of ['skill', 'target', 'count', 'die', 'cmp', 'rules']) if (prefill[k] !== undefined && prefill[k] !== null) state[k] = prefill[k];
     const chars = sourceCharacters();
-    let picked = null; // { ch, r }
 
     const html = `
       <div class="roll-dice-popup">
         <h3><i class="fa-solid fa-dice"></i> Roll Dice</h3>
+        <div class="roll-dice-modes">
+          ${PRESETS.map(p => `<div class="menu_button roll-dice-mode" data-preset="${p}">${PRESET_LABEL[p]}</div>`).join('')}
+        </div>
         ${chars.length ? `
         <div class="roll-dice-sheet">
           <label>From sheet <small>(optional)</small></label>
@@ -179,14 +234,15 @@ async function openRollPopup(prefill = {}) {
             <select id="rd_char" class="text_pole">${chars.map(ch => `<option value="${esc(ch.key)}">${esc(ch.name)}</option>`).join('')}</select>
             <select id="rd_roll" class="text_pole"></select>
           </div>
+          <div class="roll-dice-row rd-vs-row" style="display:none">
+            <div><label for="rd_vs">Target <small>(armor)</small></label>
+              <select id="rd_vs" class="text_pole"></select></div>
+          </div>
           <div class="roll-dice-row">
             <div><label for="rd_mod">Modifier</label><input id="rd_mod" class="text_pole" type="number" step="1" value="0"></div>
             <div class="roll-dice-sheet-info"></div>
           </div>
         </div>` : ''}
-        <div class="roll-dice-modes">
-          ${PRESETS.map(p => `<div class="menu_button roll-dice-mode" data-preset="${p}">${PRESET_LABEL[p]}</div>`).join('')}
-        </div>
         <label for="rd_skill">Name <small>(optional)</small></label>
         <input id="rd_skill" class="text_pole" type="text" placeholder="e.g. Persuasion / Attack" autocomplete="off">
         <div class="roll-dice-row">
@@ -199,10 +255,12 @@ async function openRollPopup(prefill = {}) {
             <select id="rd_die" class="text_pole">${dieOptions(state.die)}</select>
           </div>
         </div>
-        <label>Versus <small>(optional target)</small></label>
-        <div class="roll-dice-row roll-dice-versus">
-          <select id="rd_cmp" class="text_pole roll-dice-cmp">${COMPARATORS.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>
-          <input id="rd_target" class="text_pole" type="number" step="1" placeholder="none">
+        <div class="rd-versus-block">
+          <label>Versus <small>(optional target)</small></label>
+          <div class="roll-dice-row roll-dice-versus">
+            <select id="rd_cmp" class="text_pole roll-dice-cmp">${COMPARATORS.map(c => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>
+            <input id="rd_target" class="text_pole" type="number" step="1" placeholder="none">
+          </div>
         </div>
         <div class="roll-dice-preview"></div>
       </div>`;
@@ -215,16 +273,21 @@ async function openRollPopup(prefill = {}) {
     const skillEl = $('#rd_skill'), countEl = $('#rd_count'), dieEl = $('#rd_die'), cmpEl = $('#rd_cmp'), targetEl = $('#rd_target');
     const preview = $('.roll-dice-preview');
     const charEl = $('#rd_char'), rollEl = $('#rd_roll'), modEl = $('#rd_mod'), infoEl = $('.roll-dice-sheet-info');
+    const vsRow = $('.rd-vs-row'), vsEl = $('#rd_vs'), versusBlock = $('.rd-versus-block');
+    let picked = null;
 
     const render = () => {
         countEl.value = state.count;
         dieEl.value = String(state.die);
         cmpEl.value = state.cmp;
+        skillEl.value = state.skill || '';
+        targetEl.value = state.target ?? '';
+        versusBlock.style.display = state.damage ? 'none' : '';
         root.querySelectorAll('.roll-dice-mode').forEach(b => b.classList.toggle('roll-dice-mode-active', b.dataset.preset === state.preset));
         preview.textContent = previewText(state);
     };
     const read = () => {
-        if (picked && skillEl.value !== state.skill) { picked = null; state.rules = null; }
+        if (picked && skillEl.value !== state.skill) { picked = null; state.rules = null; state.damage = null; }
         state.skill = skillEl.value;
         state.count = countEl.value;
         state.die = Number(dieEl.value);
@@ -232,47 +295,68 @@ async function openRollPopup(prefill = {}) {
         preview.textContent = previewText(state);
     };
 
-    // ── sheet picker ──
+    // ── sheet picker: Skill mode lists rollables, Combat mode lists attacks / damage / defenses / skills & spells ──
     const currentChar = () => chars.find(ch => ch.key === charEl?.value);
-    const fillRollables = () => {
+    const listFor = (ch) => (state.preset === 'combat' ? ch?.combat : ch?.rollables) || [];
+    const fillList = () => {
         const ch = currentChar();
-        if (!rollEl || !ch) return;
-        const groups = [];
-        for (const r of ch.rollables) { let g = groups.find(x => x.name === (r.group || '')); if (!g) groups.push(g = { name: r.group || '', items: [] }); g.items.push(r); }
-        rollEl.innerHTML = '<option value="">— choose —</option>' + groups.map(g => {
-            const opts = g.items.map(r => `<option value="${esc(r.name)}">${esc(r.name)} — ${esc(r.target)}</option>`).join('');
-            return g.name ? `<optgroup label="${esc(g.name)}">${opts}</optgroup>` : opts;
-        }).join('');
+        if (!rollEl) return;
+        rollEl.innerHTML = groupedOptions(listFor(ch), r => (r.kind === 'damage'
+            ? `${r.name} — ${r.n}d${signedAdd(r.add)} ${r.type || ''}`.trim()
+            : `${r.name} — ${r.target}${r.note ? ` (${r.note})` : ''}`));
+    };
+    const fillTargets = () => {
+        if (!vsEl) return;
+        const me = currentChar();
+        const others = chars.filter(ch => ch.key !== me?.key);
+        vsEl.innerHTML = '<option value="">— no target —</option>' + others.map(ch => `<option value="${esc(ch.key)}">${esc(ch.name)} (DR ${Number(ch.dr) || 0})</option>`).join('');
     };
     const applyPick = () => {
         const ch = currentChar();
-        const r = ch?.rollables.find(x => x.name === rollEl.value);
-        picked = r ? { ch, r } : null;
-        if (!picked) { if (infoEl) infoEl.textContent = ''; return; }
+        const r = listFor(ch)[Number(rollEl.value)];
+        picked = r && rollEl.value !== '' ? { ch, r } : null;
+        if (vsRow) vsRow.style.display = picked?.r.kind === 'damage' ? '' : 'none';
+        if (!picked) { state.damage = null; if (infoEl) infoEl.textContent = ''; render(); return; }
         const mod = Math.trunc(Number(modEl.value) || 0);
-        Object.assign(state, settings().skill, { preset: 'skill' });
-        state.rules = ch.rules || null;
-        state.skill = `${ch.prefix ? `${ch.prefix} ` : ''}${r.name}${mod ? ` ${mod > 0 ? '+' : ''}${mod}` : ''}`;
-        state.target = String(Number(r.target) + mod);
-        skillEl.value = state.skill;
-        targetEl.value = state.target;
-        if (infoEl) infoEl.textContent = `${r.name} ${r.target}${mod ? ` ${mod > 0 ? '+' : ''}${mod} = ${state.target}` : ''}`;
+        const modTxt = mod ? ` ${mod > 0 ? '+' : ''}${mod}` : '';
+        const prefix = ch.prefix ? `${ch.prefix} ` : '';
+        if (r.kind === 'damage') {
+            const vs = chars.find(x => x.key === vsEl?.value);
+            state.count = r.n; state.die = 6; state.target = '';
+            state.damage = { add: (r.add || 0) + mod, type: r.type, mult: r.mult ?? 1, dr: vs ? Number(vs.dr) || 0 : 0, vs: vs ? vs.name.replace(/ \(you\)$/, '') : '' };
+            state.rules = ch.rules || null;
+            state.skill = `${prefix}${r.name}`;
+            if (infoEl) infoEl.textContent = `${r.n}d${signedAdd((r.add || 0) + mod)} ${r.type || ''}${vs ? ` vs DR ${state.damage.dr}` : ''}`;
+        } else {
+            state.damage = null;
+            state.count = 3; state.die = 6; state.cmp = '<=';
+            state.rules = ch.rules || null;
+            state.skill = `${prefix}${r.name}${modTxt}`;
+            state.target = String(Number(r.target) + mod);
+            if (infoEl) infoEl.textContent = `${r.name} ${r.target}${mod ? `${modTxt} = ${state.target}` : ''}`;
+        }
         render();
     };
     if (charEl) {
         const want = prefill.character ? chars.find(ch => ch.key.endsWith(`:${prefill.character}`)) : null;
         if (want) charEl.value = want.key;
-        fillRollables();
-        if (prefill.rollable) { rollEl.value = prefill.rollable; }
-        charEl.addEventListener('change', () => { fillRollables(); applyPick(); });
+        fillList();
+        fillTargets();
+        if (prefill.rollable) {
+            const idx = listFor(currentChar()).findIndex(r => r.name === prefill.rollable);
+            if (idx >= 0) rollEl.value = String(idx);
+        }
+        charEl.addEventListener('change', () => { fillList(); fillTargets(); applyPick(); });
         rollEl.addEventListener('change', applyPick);
+        vsEl?.addEventListener('change', applyPick);
         modEl.addEventListener('input', applyPick);
-        if (prefill.rollable) applyPick();
     }
 
     root.querySelectorAll('.roll-dice-mode').forEach(b => b.addEventListener('click', () => {
         state.preset = b.dataset.preset;
+        picked = null; state.damage = null; state.rules = null; state.skill = ''; state.target = '';
         Object.assign(state, settings()[state.preset]);
+        if (charEl) { fillList(); if (infoEl) infoEl.textContent = ''; if (vsRow) vsRow.style.display = 'none'; }
         render();
     }));
     cmpEl.addEventListener('change', () => {
@@ -286,9 +370,8 @@ async function openRollPopup(prefill = {}) {
             if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); read(); popup.complete(c.POPUP_RESULT.AFFIRMATIVE); }
         });
     });
-    skillEl.value = state.skill || '';
-    targetEl.value = state.target ?? '';
     render();
+    if (charEl && prefill.rollable) applyPick();
     setTimeout(() => skillEl.focus(), 50);
 
     const result = await showing;
