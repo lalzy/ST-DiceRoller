@@ -1,0 +1,11 @@
+.roll-dice-popup { display: flex; flex-direction: column; gap: 6px; text-align: left; min-width: 300px; }
+.roll-dice-popup h3 { margin: 0 0 6px 0; text-align: center; }
+.roll-dice-row { display: flex; gap: 10px; align-items: flex-end; }
+.roll-dice-row > div { flex: 1; display: flex; flex-direction: column; }
+.roll-dice-modes { display: flex; gap: 6px; margin-bottom: 4px; }
+.roll-dice-mode { flex: 1; text-align: center; opacity: 0.6; }
+.roll-dice-mode.roll-dice-mode-active { opacity: 1; border-color: var(--SmartThemeQuoteColor); font-weight: 700; }
+.roll-dice-versus > .roll-dice-cmp { flex: 0 0 5em; font-family: var(--monoFontFamily, monospace); font-weight: 700; margin: 0; }
+.roll-dice-versus > input { flex: 1; margin: 0; }
+.roll-dice-preview { margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: var(--black30a); font-family: var(--monoFontFamily, monospace); font-size: 0.9em; opacity: 0.85; word-break: break-word; }
+.roll-dice-settings-preset { margin-bottom: 8px; }
