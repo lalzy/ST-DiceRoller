@@ -1,33 +1,11 @@
 # ST-DiceRoller
 
-A small, no-nonsense dice roller for [SillyTavern](https://github.com/SillyTavern/SillyTavern).
+A simple dice-roller for [SillyTavern](https://github.com/SillyTavern/SillyTavern). Extention that comes with it doesn't send results to LLM, using macro's is pretty shit so had claude generate a proper one that injects results to chat so the result get sent.
 
-Pick your dice from the wand menu, roll, and the result is put into your message, so you **and** the LLM see the same roll with the dice, the total and whether it succeeded.
+While relatively light-weight it's also somewhat powerful, you select a target and can select what success threshold is (gurps it's less than, D&D it's greater than for example),  you can choose the default die for Combat and Non-Combat rolls (might extend to allow more default die at some point). 
+
 
 ![Roll Dice popup](image1.png)
-
-## Example
-
-```
-Persuasion Roll (3d6 vs <= 12): 4 + 2 + 6 = 12 (Success)
-Attack Roll (1d20 vs >= 15): 11 (Failure)
-Roll (2d8): 4 + 1 = 5
-```
-
-The roll happens in the extension before you send, and the text goes into your input box. The message is sent exactly as you see it, so nothing gets re-rolled later and the LLM doesn't have to guess what a bare number means.
-
-## Features
-
-- **Wand menu action**: ✨ → **Roll Dice**
-- **Two presets: Skill and Combat**, each with its own default number of dice, die type and comparison
-- **Versus target** (optional) with `>`, `>=`, `<` or `<=`, giving an automatic **Success** / **Failure**
-  - GURPS-style: `3d6 vs <= skill`
-  - D&D-style: `1d20 vs >= DC/AC`
-- **Optional name**, e.g. *Persuasion*, *Stealth*, *Attack*. If you leave it empty the result reads `Roll (…)`
-- Dice: d1, d2, d3, d4, d6, d8, d10, d12, d20, d100, from 1 to 100 dice
-- Fair rolls (uses `crypto.getRandomValues`, so there's no modulo bias)
-- Inserts at your cursor, so you can write around the roll
-- **Enter** rolls, **Esc** cancels
 
 ## Installation
 
@@ -48,18 +26,6 @@ Or install manually: copy this folder into `SillyTavern/data/default-user/extens
 5. Click **Roll** (or press Enter). The result is inserted into your message
 6. Send as usual
 
-## Settings
-
-**Extensions → Roll Dice** has a row for each preset:
-
-| Preset | # of dice | Die | Versus |
-|--------|-----------|-----|--------|
-| Skill  | 3 (default) | d6 (default) | `<=` (default) |
-| Combat | 1 (default) | d20 (default) | `>=` (default) |
-
-The popup always opens with these defaults. Changing values in the popup only affects that one roll.
 
 ## Notes
-
-- Works in single-character and group chats
-- No prompt injection, no slash commands and no macros. It's just text in your message
+- Completely vibe-coded. 0 Human reading of the code, and not battle tested yet.
