@@ -15,6 +15,12 @@ const DEFAULTS = {
 
 const ctx = () => SillyTavern.getContext();
 
+/**
+ * Roll sources registered by other extensions (e.g. NPC Book — GURPS).
+ * source = { id, label, getCharacters(): [{ key, name, rules?: 'gurps', rollables: [{ group, name, target }] }] }
+ */
+const sources = new Map();
+
 function clampCount(v) {
     return Math.min(100, Math.max(1, Math.floor(Number(v) || 1)));
 }
@@ -92,8 +98,23 @@ export function buildRollText(o, forced) {
 
     const label = `${name ? `${name} Roll` : 'Roll'} (${n}d${d}${target !== null ? ` vs ${cmp} ${target}` : ''})`;
     const math = n > 1 ? `${dice.join(' + ')} = ${total}` : `${total}`;
-    const verdict = target !== null ? ` (${compare(total, cmp, target) ? 'Success' : 'Failure'})` : '';
+    let verdict = '';
+    if (target !== null) {
+        verdict = o.rules === 'gurps' && n === 3 && d === 6 && cmp === '<='
+            ? ` (${gurpsVerdict(total, target)})`
+            : ` (${compare(total, cmp, target) ? 'Success' : 'Failure'})`;
+    }
     return `${label}: ${math}${verdict}`;
+}
+
+/** GURPS 4e success roll: criticals and margin (Basic Set, p. 347–348). */
+export function gurpsVerdict(total, skill) {
+    const critSuccess = total <= 4 || (total === 5 && skill >= 15) || (total === 6 && skill >= 16);
+    const critFailure = total === 18 || (total === 17 && skill <= 15) || total - skill >= 10;
+    if (critSuccess) return 'Critical Success';
+    if (critFailure) return 'Critical Failure';
+    if (total >= 17) return 'Failure, 17+ always fails';
+    return total <= skill ? `Success by ${skill - total}` : `Failure by ${total - skill}`;
 }
 
 /** Same shape as buildRollText, without rolling – for the popup preview. */
@@ -103,6 +124,19 @@ function previewText(o) {
     const name = String(o.skill ?? '').replace(/\s+/g, ' ').trim();
     const target = parseTarget(o.target);
     return `${name ? `${name} Roll` : 'Roll'} (${n}d${d}${target !== null ? ` vs ${o.cmp} ${target}` : ''}): …`;
+}
+
+/** Characters offered by registered sources (errors in one source don't break the popup). */
+function sourceCharacters() {
+    const out = [];
+    for (const src of sources.values()) {
+        try {
+            for (const ch of src.getCharacters() || []) {
+                if (ch && Array.isArray(ch.rollables) && ch.rollables.length) out.push({ ...ch, key: `${src.id}:${ch.key}`, source: src });
+            }
+        } catch (e) { console.warn('[RollDice] source failed', src.id, e); }
+    }
+    return out;
 }
 
 function insertIntoInput(text) {
@@ -126,14 +160,30 @@ function dieOptions(selected) {
     return DIE_TYPES.map(d => `<option value="${d}"${d === Number(selected) ? ' selected' : ''}>d${d}</option>`).join('');
 }
 
-async function openRollPopup() {
+async function openRollPopup(prefill = {}) {
     const c = ctx();
     const s = settings();
-    const state = { preset: 'skill', skill: '', target: '', ...s.skill };
+    const preset0 = PRESETS.includes(prefill.preset) ? prefill.preset : 'skill';
+    const state = { preset: preset0, skill: '', target: '', rules: null, ...s[preset0] };
+    for (const k of ['skill', 'target', 'count', 'die', 'cmp', 'rules']) if (prefill[k] !== undefined && prefill[k] !== null) state[k] = prefill[k];
+    const chars = sourceCharacters();
+    let picked = null; // { ch, r }
 
     const html = `
       <div class="roll-dice-popup">
         <h3><i class="fa-solid fa-dice"></i> Roll Dice</h3>
+        ${chars.length ? `
+        <div class="roll-dice-sheet">
+          <label>From sheet <small>(optional)</small></label>
+          <div class="roll-dice-row">
+            <select id="rd_char" class="text_pole">${chars.map(ch => `<option value="${esc(ch.key)}">${esc(ch.name)}</option>`).join('')}</select>
+            <select id="rd_roll" class="text_pole"></select>
+          </div>
+          <div class="roll-dice-row">
+            <div><label for="rd_mod">Modifier</label><input id="rd_mod" class="text_pole" type="number" step="1" value="0"></div>
+            <div class="roll-dice-sheet-info"></div>
+          </div>
+        </div>` : ''}
         <div class="roll-dice-modes">
           ${PRESETS.map(p => `<div class="menu_button roll-dice-mode" data-preset="${p}">${PRESET_LABEL[p]}</div>`).join('')}
         </div>
@@ -164,6 +214,7 @@ async function openRollPopup() {
     const $ = (sel) => root.querySelector(sel);
     const skillEl = $('#rd_skill'), countEl = $('#rd_count'), dieEl = $('#rd_die'), cmpEl = $('#rd_cmp'), targetEl = $('#rd_target');
     const preview = $('.roll-dice-preview');
+    const charEl = $('#rd_char'), rollEl = $('#rd_roll'), modEl = $('#rd_mod'), infoEl = $('.roll-dice-sheet-info');
 
     const render = () => {
         countEl.value = state.count;
@@ -173,12 +224,51 @@ async function openRollPopup() {
         preview.textContent = previewText(state);
     };
     const read = () => {
+        if (picked && skillEl.value !== state.skill) { picked = null; state.rules = null; }
         state.skill = skillEl.value;
         state.count = countEl.value;
         state.die = Number(dieEl.value);
         state.target = targetEl.value;
         preview.textContent = previewText(state);
     };
+
+    // ── sheet picker ──
+    const currentChar = () => chars.find(ch => ch.key === charEl?.value);
+    const fillRollables = () => {
+        const ch = currentChar();
+        if (!rollEl || !ch) return;
+        const groups = [];
+        for (const r of ch.rollables) { let g = groups.find(x => x.name === (r.group || '')); if (!g) groups.push(g = { name: r.group || '', items: [] }); g.items.push(r); }
+        rollEl.innerHTML = '<option value="">— choose —</option>' + groups.map(g => {
+            const opts = g.items.map(r => `<option value="${esc(r.name)}">${esc(r.name)} — ${esc(r.target)}</option>`).join('');
+            return g.name ? `<optgroup label="${esc(g.name)}">${opts}</optgroup>` : opts;
+        }).join('');
+    };
+    const applyPick = () => {
+        const ch = currentChar();
+        const r = ch?.rollables.find(x => x.name === rollEl.value);
+        picked = r ? { ch, r } : null;
+        if (!picked) { if (infoEl) infoEl.textContent = ''; return; }
+        const mod = Math.trunc(Number(modEl.value) || 0);
+        Object.assign(state, settings().skill, { preset: 'skill' });
+        state.rules = ch.rules || null;
+        state.skill = `${ch.prefix ? `${ch.prefix} ` : ''}${r.name}${mod ? ` ${mod > 0 ? '+' : ''}${mod}` : ''}`;
+        state.target = String(Number(r.target) + mod);
+        skillEl.value = state.skill;
+        targetEl.value = state.target;
+        if (infoEl) infoEl.textContent = `${r.name} ${r.target}${mod ? ` ${mod > 0 ? '+' : ''}${mod} = ${state.target}` : ''}`;
+        render();
+    };
+    if (charEl) {
+        const want = prefill.character ? chars.find(ch => ch.key.endsWith(`:${prefill.character}`)) : null;
+        if (want) charEl.value = want.key;
+        fillRollables();
+        if (prefill.rollable) { rollEl.value = prefill.rollable; }
+        charEl.addEventListener('change', () => { fillRollables(); applyPick(); });
+        rollEl.addEventListener('change', applyPick);
+        modEl.addEventListener('input', applyPick);
+        if (prefill.rollable) applyPick();
+    }
 
     root.querySelectorAll('.roll-dice-mode').forEach(b => b.addEventListener('click', () => {
         state.preset = b.dataset.preset;
@@ -196,6 +286,8 @@ async function openRollPopup() {
             if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); read(); popup.complete(c.POPUP_RESULT.AFFIRMATIVE); }
         });
     });
+    skillEl.value = state.skill || '';
+    targetEl.value = state.target ?? '';
     render();
     setTimeout(() => skillEl.focus(), 50);
 
@@ -256,6 +348,17 @@ function addSettingsUi() {
 
 (function init() {
     if (typeof SillyTavern === 'undefined') return; // loaded outside ST (tests)
+    window.RollDice = {
+        version: 2,
+        /** Open the roll popup, optionally prefilled: { preset, skill, target, cmp, count, die, rules, character, rollable }. */
+        open: (prefill) => openRollPopup(prefill).catch(e => console.error('[RollDice]', e)),
+        /** Register a provider of characters and their rollable stats (see `sources` above). */
+        registerSource: (src) => { if (src?.id && typeof src.getCharacters === 'function') sources.set(src.id, src); },
+        unregisterSource: (id) => sources.delete(id),
+        buildRollText,
+        insertIntoInput,
+    };
+    document.dispatchEvent(new CustomEvent('rolldice:ready', { detail: window.RollDice }));
     settings();
     addSettingsUi();
     addWandButton();

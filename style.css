@@ -9,3 +9,6 @@
 .roll-dice-versus > input { flex: 1; margin: 0; }
 .roll-dice-preview { margin-top: 6px; padding: 6px 8px; border-radius: 6px; background: var(--black30a); font-family: var(--monoFontFamily, monospace); font-size: 0.9em; opacity: 0.85; word-break: break-word; }
 .roll-dice-settings-preset { margin-bottom: 8px; }
+.roll-dice-sheet { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--SmartThemeBorderColor); border-radius: 8px; margin-bottom: 4px; }
+.roll-dice-sheet .roll-dice-row > select { flex: 1; margin: 0; min-width: 0; }
+.roll-dice-sheet-info { justify-content: flex-end; opacity: .75; font-family: var(--monoFontFamily, monospace); font-size: .9em; padding-bottom: 6px; }
