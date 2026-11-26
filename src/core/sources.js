@@ -1,6 +1,6 @@
 /**
- * Roll sources registered by other extensions (e.g. NPC Book — GURPS).
- * source = { id, label, getCharacters(): [{ key, name, rules?: 'gurps', rollables: [{ group, name, target }] }] }
+ * Roll sources registered by other extensions (e.g. NPC Book character sheets).
+ * source = { id, label, getCharacters(): [{ key, name, rules?: string, rollables: [{ group, name, target }] }] }
  */
 const sources = new Map();
 
@@ -26,4 +26,23 @@ export function sourceCharacters() {
         } catch (e) { console.warn('[RollDice] source failed', src.id, e); }
     }
     return out;
+}
+
+// ── Combat plugin ──────────────────────────────────────────────────────
+// When a combat plugin is running it rolls attacks, defenses and damage itself, so the popup offers checks only.
+// It can say so with RollDice.setCombatActive(true); otherwise it is detected by its global or its loaded script.
+let combatFlag = null;
+
+/** true / false: set by the combat plugin; null: detect. */
+export function setCombatActive(v) {
+    combatFlag = v === null || v === undefined ? null : !!v;
+}
+
+export function combatActive() {
+    if (combatFlag !== null) return combatFlag;
+    if (typeof window === 'undefined') return false;
+    if (window.NPCBookCombat || window.CombatMode) return true;
+    try {
+        return [...document.querySelectorAll('script[src]')].some(sc => /\/(NPC-?Book-?Combat|Combat-?Mode)[^/]*\//i.test(sc.getAttribute('src') || ''));
+    } catch { return false; }
 }

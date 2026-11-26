@@ -1,22 +1,19 @@
-import { MODULE, PRESETS, DEFAULTS } from './constants.js';
+import { MODULE, PRESETS, DEFAULTS, DAMAGE_DEFAULTS } from './constants.js';
 import { ctx } from './context.js';
-import { clampCount, validDie, validCmp } from './validate.js';
 
-/** Read (and normalize / migrate) this extension's settings. */
+
+/** This extension's settings. The user's values always win: only missing keys get a default. */
 export function settings() {
     const all = ctx().extensionSettings;
     const s = all[MODULE] || {};
-    // migrate v1/v2 settings ({count, die}) into the skill preset
+    // very old settings ({count, die} at the top): use them for the skill preset when it has none
     if (!s.skill && (s.count || s.die)) s.skill = { count: s.count, die: s.die };
     for (const p of PRESETS) {
-        const cur = s[p] || {};
-        s[p] = {
-            count: clampCount(cur.count ?? DEFAULTS[p].count),
-            die: validDie(cur.die) ?? DEFAULTS[p].die,
-            cmp: validCmp(cur.cmp) ?? DEFAULTS[p].cmp,
-        };
+        s[p] = s[p] && typeof s[p] === 'object' ? s[p] : {};
+        for (const [k, v] of Object.entries(DEFAULTS[p])) if (s[p][k] === undefined || s[p][k] === null) s[p][k] = v;
     }
-    delete s.count; delete s.die;
+    s.damage = s.damage && typeof s.damage === 'object' ? s.damage : {};
+    for (const [k, v] of Object.entries(DAMAGE_DEFAULTS)) if (s.damage[k] === undefined) s.damage[k] = v;
     all[MODULE] = s;
     return s;
 }
