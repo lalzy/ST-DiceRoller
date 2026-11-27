@@ -29,6 +29,7 @@
 //   labels    words used in logs and prompts
 
 import { evalSkillFormula } from './formula.js';
+import { normalizeDiceExtras, normalizeSymbols, normalizeLevels, isPool, formulaOk } from './pool.js';
 
 export const STAT_ROLES = ['strength', 'agility', 'mind', 'health', 'will', 'perception'];
 
@@ -144,10 +145,12 @@ export function normalizePack(p) {
     const out = {
         id: str(src.id, base.id).trim().toLowerCase().replace(/\s+/g, '-') || base.id,
         name: str(src.name, base.name).trim() || base.name,
-        dice: { count: Math.min(20, Math.max(1, Math.floor(num(d.count, base.dice.count)))), die: Math.min(1000, Math.max(2, Math.floor(num(d.die, base.dice.die)))) },
+        dice: normalizeDiceExtras({ dice: { ...d, count: Math.min(20, Math.max(1, Math.floor(num(d.count, base.dice.count)))), die: Math.min(1000, Math.max(2, Math.floor(num(d.die, base.dice.die)))) } }, base),
         test: oneOf(src.test, ['under', 'over'], base.test),
         crit: {
-            mode: oneOf(c.mode, ['total', 'natural', 'none'], base.crit.mode),
+            mode: oneOf(c.mode, ['total', 'natural', 'none', 'symbol'], base.crit.mode),
+            successAt: c.successAt !== undefined && formulaOk(c.successAt, ['DICE']) ? String(c.successAt) : '',
+            failureAt: c.failureAt !== undefined && formulaOk(c.failureAt, ['DICE']) ? String(c.failureAt) : '',
             success: str(c.success, base.crit.success),
             failure: str(c.failure, base.crit.failure),
             successMax: critFormula(c.successMax),
@@ -155,7 +158,9 @@ export function normalizePack(p) {
             effect: oneOf(c.effect, ['none', 'double', 'max', 'nodefense'], base.crit.effect),
         },
         defense: {
-            model: oneOf(df.model, ['active', 'passive'], base.defense.model),
+            model: oneOf(df.model, ['active', 'passive', 'opposed'], base.defense.model),
+            // opposed: who wins a tie between the attack and the defense roll
+            ties: oneOf(df.ties, ['defender', 'attacker'], 'defender'),
             names: (Array.isArray(df.names) ? df.names : base.defense.names).map(x => String(x).toLowerCase().trim()).filter(Boolean),
             retreat: typeof df.retreat === 'boolean' ? df.retreat : base.defense.retreat,
             passiveName: str(df.passiveName, base.defense.passiveName),
@@ -196,6 +201,10 @@ export function normalizePack(p) {
         if (!key) continue;
         out.stats[key] = (Array.isArray(names) ? names : [names]).map(x => String(x ?? '').trim()).filter(Boolean);
     }
-    if (out.dice.count > 1 && out.crit.mode === 'natural') out.crit.mode = 'total';
+    if (out.dice.count > 1 && out.crit.mode === 'natural' && !out.dice.keep) out.crit.mode = 'total';
+    out.symbols = normalizeSymbols(src.symbols);
+    out.levels = normalizeLevels(src.levels);
+    // a pool counts up to a target: it is always read as "meet or beat"
+    if (isPool(out)) out.test = 'over';
     return out;
 }

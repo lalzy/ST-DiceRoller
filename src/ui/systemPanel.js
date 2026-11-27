@@ -1,10 +1,12 @@
 import { getPack, defaultPackId, setDefaultPack, chatPackId, setChatPack, templateStore, packRules } from '../system/index.js';
 import { BUILT_IN, CLASSIC_3D6 } from '../system/packs.js';
+import { diceText, isPool } from '../system/pool.js';
 import { mountRulesTemplates } from './rulesTemplates.js';
 
 function summary(p) {
-    const roll = p.test === 'under' ? `${p.dice.count}d${p.dice.die}, roll at or under the ${p.labels.value}` : `${p.dice.count}d${p.dice.die} + ${p.labels.value}, meet or beat the ${p.labels.target}`;
-    const def = p.defense.model === 'active' ? `defender rolls ${p.defense.names.join(' / ') || 'a defense'}` : `attacks must reach the target's ${p.defense.passiveName}`;
+    const dice = diceText(p);
+    const roll = isPool(p) ? `${dice}, meet or beat the ${p.labels.target}` : p.test === 'under' ? `${dice}, roll at or under the ${p.labels.value}` : `${dice} + ${p.labels.value}, meet or beat the ${p.labels.target}`;
+    const def = p.defense.model === 'active' ? `defender rolls ${p.defense.names.join(' / ') || 'a defense'}` : p.defense.model === 'opposed' ? `defender rolls ${p.defense.names.join(' / ') || 'a defense'} against the attack's roll` : `attacks must reach the target's ${p.defense.passiveName}`;
     const armor = p.armor === 'reduce' ? 'armor reduces damage' : `armor adds to ${p.defense.passiveName}`;
     return `${roll} · ${def} · ${armor}`;
 }

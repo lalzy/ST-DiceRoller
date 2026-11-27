@@ -1,7 +1,7 @@
 // Game system packs: storage (default + custom in settings, choice per chat) and the API other extensions use.
 import { MODULE } from '../core/constants.js';
 import { BUILT_IN, DEFAULT_PACK, STAT_ROLES, normalizePack } from './packs.js';
-import { test, read, describe, chance, statMod, statScore, statRole, evalStatMod, critLists, critBounds } from './resolve.js';
+import { test, read, describe, chance, statMod, statScore, statRole, evalStatMod, critLists, critBounds, diceText } from './resolve.js';
 import { isTemplateStore } from '../ui/rulesTemplates.js';
 
 const ctx = () => (typeof SillyTavern !== 'undefined' ? SillyTavern.getContext() : null);
@@ -120,6 +120,8 @@ export function systemApi() {
         chance,
         critLists,
         critBounds,
+        /** diceText(pack): how the pack rolls, in a few words ("3d6", "a pool of d6 sized by the skill"). */
+        diceText,
         statMod,
         statScore,
         statRole,

@@ -2,6 +2,7 @@
 // Every number comes from the character sheet and the chat's game system pack; nothing here is tied to one game.
 import { signedAdd } from '../../rolls/dice.js';
 import { critLists, statMod, statScore } from '../../system/resolve.js';
+import { isExtended, diceText } from '../../system/pool.js';
 
 export const moreOf = (r) => (Array.isArray(r.more) ? r.more.filter(m => Number(m.n) > 0).map(m => `+${m.n}d${m.sides}`).join('') : '');
 export const plainName = (ch) => String(ch?.name || '').replace(/ \(you\)$/, '');
@@ -92,6 +93,12 @@ export function testRoll(pack, ch, r, { mod = 0, dc = null, vs = null, tab = 'ch
     const at = tab === 'attack' && vs ? ` at ${plainName(vs)}` : '';
     const skill = `${prefix}${r.name}${modTxt}${at}`;
     const args = { skill, count: pack.dice.count, die: pack.dice.die, crit };
+    // custom faces, pools, kept dice, mixed kinds: the pack rolls it (buildRollText hands it to the game system)
+    if (isExtended(pack)) {
+        const target = pack.test === 'over' ? (Number.isFinite(Number(dc)) && dc !== '' && dc !== null ? Number(dc) : defaultDc(pack, tab, vs)) : null;
+        Object.assign(args, { system: { pack, value, dc: target } });
+        return { args, info: `${r.name} ${pack.test === 'over' ? signedAdd(value) || '+0' : value} · ${diceText(pack)}${target !== null ? ` vs ${pack.labels.target} ${target}` : ''}` };
+    }
     if (pack.test === 'over') {
         const target = Number.isFinite(Number(dc)) && dc !== '' && dc !== null ? Number(dc) : defaultDc(pack, tab, vs);
         Object.assign(args, { cmp: '>=', bonus: value, target: String(target) });

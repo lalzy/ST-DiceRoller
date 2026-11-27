@@ -3,6 +3,9 @@ import { rollDie as cryptoDie } from '../rolls/dice.js';
 import { parseTotals } from '../rolls/verdict.js';
 import { normalizePack } from './packs.js';
 import { evalSkillFormula } from './formula.js';
+import { isExtended, isPool, poolSpec, readPool, levelOf, evalVars, diceText } from './pool.js';
+
+export { diceText };
 
 /** The pack's skill-based critical bounds for a roll with `value` ({SKILL}); null where the pack sets none. */
 export function critBounds(p, value) {
@@ -17,7 +20,7 @@ export function critBounds(p, value) {
  */
 export function critLists(pack, value) {
     const p = pack?.test ? pack : normalizePack(pack);
-    if (p.crit.mode === 'none') return { success: '', failure: '' };
+    if (p.crit.mode === 'none' || p.crit.mode === 'symbol' || isPool(p)) return { success: '', failure: '' };
     const lo = p.crit.mode === 'natural' ? 1 : p.dice.count;
     const hi = p.crit.mode === 'natural' ? p.dice.die : p.dice.count * p.dice.die;
     const { successMax, failureMin } = critBounds(p, value);
@@ -41,8 +44,61 @@ const sum = (a) => a.reduce((x, y) => x + y, 0);
 export function test(pack, value, opts = {}) {
     const p = pack?.test ? pack : normalizePack(pack);
     const roll = typeof opts.roll === 'function' ? opts.roll : cryptoDie;
+    // custom faces, pools, kept dice, mixed kinds, bonus / penalty dice (opts.extra: + more dice keep the best, − the worst)
+    if (isExtended(p) || Number(opts.extra)) {
+        const spec = poolSpec(p, Number(value) || 0, opts.dc, opts.extra);
+        const rolled = spec.dice.map(d => ({ spec: d, face: roll(d.die) }));
+        return readExtended(p, rolled, spec, Number(value) || 0, opts.dc);
+    }
     const dice = Array.from({ length: p.dice.count }, () => roll(p.dice.die));
-    return read(p, dice, Number(value) || 0, opts.dc);
+    return withLevel(p, read(p, dice, Number(value) || 0, opts.dc));
+}
+
+/** The pack's result level ('' when none) added to a result. */
+function withLevel(p, r) {
+    const level = levelOf(p, r.margin, r.value, r.target);
+    return level ? { ...r, level } : r;
+}
+
+/**
+ * Read dice rolled the extended way: `rolled` = [{ spec, face }] (spec: { kind, die, faces }), `spec` from poolSpec.
+ * Pools are "meet or beat": the total is the dice's worth alone (the value sized the pool); otherwise the value is
+ * added (over) or the total must stay at or under it (under), as with plain dice.
+ */
+export function readExtended(p, rolled, spec, value, dc) {
+    const R = readPool(p, rolled, spec.keep);
+    const pool = isPool(p);
+    const over = pool || p.test === 'over';
+    const total = pool ? R.sum : over ? R.sum + value : R.sum;
+    const dcNum = Number.isFinite(Number(dc)) ? Number(dc) : p.checks.normal;
+    const target = pool ? (p.dice.need ? Math.round(evalVars(p.dice.need, { VALUE: value, DC: dcNum }) ?? dcNum) : dcNum) : over ? dcNum : value;
+    let crit = null;
+    const keptFaces = R.kept.map(i => rolled[i].face);
+    if (p.crit.mode === 'symbol') {
+        const at = (f) => Math.max(1, Math.round(evalVars(f || '1', { DICE: rolled.length }) ?? 1));
+        const sy = p.crit.success && (R.symbols[String(p.crit.success).toLowerCase()] || 0) >= at(p.crit.successAt);
+        const fy = p.crit.failure && (R.symbols[String(p.crit.failure).toLowerCase()] || countRaw(rolled, R, p.crit.failure)) >= at(p.crit.failureAt);
+        crit = sy ? 'success' : fy ? 'failure' : null;
+    } else if (p.crit.mode !== 'none' && !pool) {
+        const face = p.crit.mode === 'natural' ? keptFaces[0] : R.sum;
+        const { successMax, failureMin } = critBounds(p, value);
+        if (parseTotals(p.crit.success).has(face) || (successMax !== null && face <= successMax)) crit = 'success';
+        else if (parseTotals(p.crit.failure).has(face) || (failureMin !== null && face >= failureMin)) crit = 'failure';
+    }
+    const passes = over ? total >= target : total <= target;
+    const margin = over ? total - target : target - total;
+    const out = {
+        dice: rolled.map(r => r.face), sum: R.sum, value, total, target, test: over ? 'over' : 'under',
+        success: crit ? crit === 'success' : passes, crit, margin, natural: keptFaces[0] ?? 0,
+        extended: true, pool, kept: R.kept, kinds: rolled.map(r => r.spec.kind), worth: R.values, symbols: R.symbols,
+    };
+    return withLevel(p, out);
+}
+
+/** A crit symbol that cancelling removed still counts when the pack's own symbol list doesn't net it (raw count). */
+function countRaw(rolled, R, sym) {
+    const k = String(sym).toLowerCase();
+    return R.kept.reduce((n, i) => { const v = R.values[i]; return n + (v && typeof v === 'object' ? Number(v[k]) || 0 : 0); }, 0);
 }
 
 /** Read already-rolled dice (also used by tests). */
@@ -67,7 +123,20 @@ const signed = (n) => (n >= 0 ? `+ ${n}` : `- ${-n}`);
 
 /** "4 + 3 + 2 = 9 vs 12 · success by 3" (under) / "17 + 5 = 22 vs DC 15 · success by 7" (over). */
 export function describe(r, pack) {
-    const verdict = r.crit ? `critical ${r.crit}` : r.success ? `success by ${r.margin}` : `failure by ${-r.margin}`;
+    const verdict = (r.crit ? `critical ${r.crit}` : r.success ? `success by ${r.margin}` : `failure by ${-r.margin}`) + (r.level ? ` (${r.level})` : '');
+    if (r.extended) {
+        // each die as rolled (dropped ones in brackets), what they are worth, then the total
+        const show = (v) => (typeof v === 'number' ? `${v}` : Object.entries(v || {}).map(([k, n]) => `${n > 1 ? `${n} ` : ''}${k}`).join('+') || '–');
+        const custom = r.worth.some((v, i) => typeof v !== 'number' || v !== r.dice[i]);
+        const bits = r.dice.map((f, i) => {
+            const t = `${r.kinds[i] ? `${r.kinds[i]}:` : ''}${f}${custom ? `=${show(r.worth[i])}` : ''}`;
+            return r.kept.includes(i) ? t : `(${t})`;
+        });
+        const sym = Object.keys(r.symbols || {}).length && (pack?.symbols?.cancel?.length || Object.keys(r.symbols).length > 1) ? ` [${Object.entries(r.symbols).map(([k, n]) => `${n} ${k}`).join(', ')}]` : '';
+        const math = r.pool ? `${r.total}` : r.test === 'over' ? `${r.sum}${r.value ? ` ${signed(r.value)}` : ''} = ${r.total}` : `${r.total}`;
+        const label = r.test === 'over' ? (r.vsLabel || pack?.labels?.target || 'DC') : '';
+        return `${bits.join(' ')} → ${math}${sym} vs ${label ? `${label} ` : ''}${r.target} · ${verdict}`;
+    }
     if (r.test === 'over') {
         const label = pack?.labels?.target || 'DC';
         const math = `${r.dice.join(' + ')}${r.value ? ` ${signed(r.value)}` : ''} = ${r.total}`;
@@ -91,6 +160,7 @@ const cache = new Map();
 /** Exact chance that a check succeeds (criticals included). */
 export function chance(pack, value, dc) {
     const p = pack?.test ? pack : normalizePack(pack);
+    if (isExtended(p)) return sampledChance(p, value, dc);
     const key = `${p.dice.count}d${p.dice.die}`;
     if (!cache.has(key)) cache.set(key, sumDist(p.dice.count, p.dice.die));
     if (p.crit.mode === 'natural') {
@@ -105,6 +175,22 @@ export function chance(pack, value, dc) {
         if (read(p, [s], Number(value) || 0, dc).success) ok += pr;
     }
     return ok;
+}
+
+/** Chance of an extended roll, by sampling (exact sums aren't practical with symbols, kept dice and mixed kinds). */
+const sampleCache = new Map();
+function sampledChance(p, value, dc) {
+    const key = JSON.stringify([p.dice, p.symbols, p.crit, p.test, Number(value) || 0, dc ?? null]);
+    if (sampleCache.has(key)) return sampleCache.get(key);
+    let seed = 12345;
+    const rnd = (sides) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return 1 + (seed % sides); };
+    const N = 2000;
+    let ok = 0;
+    for (let i = 0; i < N; i++) if (test(p, value, { dc, roll: rnd }).success) ok++;
+    const v = ok / N;
+    if (sampleCache.size > 500) sampleCache.clear();
+    sampleCache.set(key, v);
+    return v;
 }
 
 // ── stat modifiers ─────────────────────────────────────────────────────

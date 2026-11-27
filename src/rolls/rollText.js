@@ -2,6 +2,8 @@ import { clampCount, validDie, validCmp, parseTarget } from '../core/validate.js
 import { rollDie, signedAdd } from './dice.js';
 import { damageText, moreText } from './damage.js';
 import { rollVerdict } from './verdict.js';
+import { test as systemTest, describe as systemDescribe } from '../system/resolve.js';
+import { diceText } from '../system/pool.js';
 
 const cleanName = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
 
@@ -14,6 +16,13 @@ const cleanName = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
  * @param {number[]} [forced] dice results (for tests)
  */
 export function buildRollText(o, forced) {
+    // a game system pack with custom faces / pools / kinds: its own roll and reading
+    if (o.system?.pack) {
+        const q = forced ? [...forced] : null;
+        const r = systemTest(o.system.pack, o.system.value, { dc: o.system.dc ?? undefined, roll: q ? (s) => (q.length ? q.shift() : rollDie(s)) : rollDie });
+        const verdict = r.crit ? `Critical ${r.crit === 'success' ? 'Success' : 'Failure'}` : r.success ? 'Success' : 'Failure';
+        return `${cleanName(o.skill) ? `${cleanName(o.skill)} Roll` : 'Roll'} (${diceText(o.system.pack)}): ${systemDescribe(r, o.system.pack).replace(/ · [^·]*$/, '')} (${verdict}${r.level ? `, ${r.level}` : ''})`;
+    }
     const n = o.damage?.flat ? 0 : clampCount(o.count); // flat damage (damage.flat): no dice, the number is the damage
     const d = validDie(o.die) ?? 20;
     const name = cleanName(o.skill);
@@ -40,6 +49,7 @@ export function buildRollText(o, forced) {
 
 /** Same shape as buildRollText, without rolling – for the popup preview. */
 export function previewText(o) {
+    if (o.system?.pack) return `${cleanName(o.skill) ? `${cleanName(o.skill)} Roll` : 'Roll'} (${diceText(o.system.pack)}): …`;
     const n = clampCount(o.count);
     const d = validDie(o.die) ?? 20;
     const name = cleanName(o.skill);
