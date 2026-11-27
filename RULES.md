@@ -5,7 +5,7 @@ Roll Dice holds two kinds of rule data:
 1. **Settings** for rolling by hand (Extensions → Roll Dice): dice per preset, critical totals, damage floors.
 2. **Game system packs** (Extensions → Roll Dice → Game system). They set how every roll made from a character sheet, and by Combat Mode, is rolled and read.
 
-This file describes exactly what the code reads (`src/system/packs.js`, `src/system/resolve.js`, `src/core/constants.js`).
+This file describes exactly what the code reads (`src/system/packs.js`, `src/system/resolve.js`, `src/system/pool.js`, `src/core/constants.js`).
 
 ---
 
@@ -45,13 +45,14 @@ When a pack is read:
 | Key | Values (Classic 3d6 default) | Meaning |
 |---|---|---|
 | `id`, `name` | text | |
-| `dice` | `{ "count": 3, "die": 6 }` | What a check rolls. Count is 1–20, die is 2–1000. |
-| `test` | `"under"` | `under`: the dice total must be ≤ the value (skill). `over`: dice + value (bonus) must be ≥ the target number. |
-| `crit.mode` | `"none"` | `total` (the dice sum is checked against the lists) · `natural` (the first die's face; with more than one die it becomes `total`) · `none` |
+| `dice` | `{ "count": 3, "die": 6 }` | What a check rolls. Count is 1–20, die is 2–1000. Optional keys for custom faces, pools, kept dice and mixed kinds of dice: see **Extended dice** below. |
+| `test` | `"under"` | `under`: the dice total must be ≤ the value (skill). `over`: dice + value (bonus) must be ≥ the target number. A pack with `dice.pool` or `dice.kinds` is always read as `over`. |
+| `crit.mode` | `"none"` | `total` (the dice sum is checked against the lists) · `natural` (the first die's face; with more than one die it becomes `total`, unless `dice.keep` is set: then it is the first kept die) · `symbol` (a named symbol makes it critical, see **Extended dice**) · `none`. Pools (`dice.pool`, `dice.kinds`) only use `symbol` or `none`. |
 | `crit.success` / `crit.failure` | `""` | Totals like `"3-4"` or `"17-18"`. A critical overrides success or failure. |
 | `crit.successMax` / `crit.failureMin` | `""` | Critical ranges that move with skill: a formula on `{SKILL}` (the value rolled with). A roll at or below `successMax` is a critical success, at or above `failureMin` a critical failure, on top of the lists. Formulas: numbers, `{SKILL}`, `+ - * /`, brackets, `floor ceil round abs min max`. Example: `"successMax": "4 + min(2, max(0, {SKILL} - 14))"`, `"failureMin": "min(18, {SKILL} + 10)"`. A broken formula is ignored. They only count when `crit.mode` is `total` or `natural` (the Classic 3d6 base is `none`, so set `mode`). |
 | `crit.effect` | `"none"` | What a critical **hit** does: `none` · `double` (damage dice doubled) · `max` (damage dice at maximum) · `nodefense` (the target can't defend) |
-| `defense.model` | `"active"` | `active`: the defender rolls one of `names`. `passive`: the attack must reach a number (the sheet's `ac`, else `passiveBase` + the stat modifier of `passiveStat`). |
+| `defense.model` | `"active"` | `active`: the defender rolls one of `names` against its own value. `passive`: the attack must reach a number (the sheet's `ac`, else `passiveBase` + the stat modifier of `passiveStat`). `opposed`: the defender rolls one of `names`, and that roll is compared with the attack's roll (see **Opposed defense**). |
+| `defense.ties` | `"defender"` | `opposed` only: who wins when the two rolls are equal, `defender` or `attacker`. |
 | `defense.names` | `["dodge","parry","block"]` | Defense words matched against the sheet's defense entries. |
 | `defense.retreat` | `false` | `true` lets retreating add Combat's `retreatBonus`. |
 | `defense.passiveName` / `passiveBase` / `passiveStat` | `"defense"` / `10` / `"agility"` | Used by passive defense. |
@@ -68,6 +69,45 @@ When a pack is read:
 | `caps` | `{ "situation": 6, "judge": 4 }` | The largest free-form situation modifier and LLM judgement, in either direction. |
 | `aim` | `null` | The bonus for aiming. `null` means Combat's `aimBonus` is used. |
 | `labels` | `{ "value": "skill", "target": "target", "passive": "defense" }` | Words used in logs and prompts. |
+| `symbols` | `{ "total": "", "cancel": [] }` | Named symbols on dice faces: see **Extended dice**. |
+| `levels` | `[]` | Named results by margin: see **Result levels**. |
+
+### Extended dice
+
+All optional. A pack without them rolls exactly as described above. A pack uses extended dice when it sets `dice.faces`, `dice.pool`, `dice.keep`, `dice.kinds` or `crit.mode: "symbol"`, or when a roll asks for bonus or penalty dice.
+
+| Key | Meaning |
+|---|---|
+| `dice.faces` | `[v1, v2, …]`: what each face is worth, face 1 first. A number (0 and negatives allowed) or an object of symbol counts, `{ "hit": 1, "spark": 1 }`. A face that is missing or doesn't read counts as its own number. The total is the sum of what the faces are worth. |
+| `dice.pool` | A formula on `{VALUE}` (the value rolled with: the skill, attribute or bonus, modifiers included) and `{DC}` (the target number): how many dice are rolled, 0–100. The value then **sizes the pool and is not added** to the total. Example: `"{VALUE}"`. |
+| `dice.keep` | How many dice count. The rest are rolled but dropped (shown in brackets in the log). |
+| `dice.keepFrom` | `best` (the default: the highest for `over`, the lowest for `under`) · `highest` · `lowest`. |
+| `dice.kinds` | `{ "name": { "die": 6, "faces": [...], "count": "formula" } }`: a pool of several kinds of dice, each with its own die size and faces. `count` is a formula on `{VALUE}` and `{DC}`. It replaces `dice.count` / `dice.die` / `dice.pool`. |
+| `dice.need` | Pools only: a formula on `{VALUE}` and `{DC}`, the total the pool must reach. Default: the DC (the attack's target number, a save's DC), else `checks.normal`. Set it (e.g. `"1"`) when `{DC}` is used to size a kind of dice instead. |
+| `symbols.total` | The symbol whose net count is the total. Numeric faces add to it. Without `total`, only numeric faces add to the total; symbol faces only show in `symbols` (and can make a symbol critical). |
+| `symbols.cancel` | `[["hit", "miss"], ["boon", "bane"]]`: each pair cancels one for one, and what is left of each is its net count. Net counts are in the result's `symbols`. |
+| `crit.mode: "symbol"` | `crit.success` / `crit.failure` name a symbol. The roll is critical when its net count reaches `crit.successAt` / `crit.failureAt` (formulas on `{DICE}`, the number of dice rolled; default 1). A failure symbol that a cancel pair removed still counts by its raw number on the kept dice. |
+
+**Bonus and penalty dice.** Anything that rolls through the pack can ask for `extra` dice (Combat Mode: the `dice` modifier). For a plain or kept roll, `+n` rolls n more dice and keeps the same number of the best ones; `−n` rolls n more and keeps the worst ones. In a pool, `extra` adds or takes away dice (never fewer than 0).
+
+**How it reads.** A pool succeeds when its total is at or above `dice.need`, and the margin is total − need. A non-pool roll with faces or kept dice reads like a plain one: `over` adds the value and compares with the target number, `under` compares the total with the value.
+
+**Log text.** Each die is shown as `face=worth` (`kind:face=worth` in a mixed pool). Dropped dice are in brackets. Net symbols are in square brackets: `good:2=hit good:6=hit+star bad:2=miss → 1 [1 hit, 1 star] vs DC 1 · critical success`.
+
+**Chance.** The odds shown for extended dice come from 2000 simulated rolls, not an exact count.
+
+### Opposed defense
+
+With `defense.model: "opposed"`, Combat Mode rolls the attack and then the defense, and compares the two:
+- **`over` packs and pools:** the defense total must reach the attack total. A tie goes to `defense.ties`. The attack isn't stopped by its own target number, only by the defense roll or a critical failure. If the target has no defense it can use, the attack's target number decides.
+- **`under` packs:** the attack must succeed first. The defense then stops it if it succeeds by more than the attack did, or by as much on a tie that goes to the defender.
+- **Margin:** what the attack won by (attack total − defense total, or the attack's margin − the defense's margin) is the attack's margin from then on, e.g. for Combat Mode's `damageMargin`.
+
+A critical success on the defense always stops the attack, and a critical failure never does.
+
+### Result levels
+
+`levels: [{ "name": "strong", "atLeast": "3" }, { "name": "plain", "atLeast": "0" }]`. `atLeast` is a formula on `{VALUE}` and `{TARGET}`. Every roll gets the name of the highest threshold its margin reaches as `level` (none when it reaches none). The order you write them in doesn't matter. Negative thresholds name failures. Levels show in the log after the verdict, e.g. `success by 4 (strong)`, and Combat Mode formulas can read them as `{L_<name>}`.
 
 ### `stats`: connecting your sheet to the engine
 
@@ -89,7 +129,27 @@ Each role lists the sheet **keys** that fill it, case-insensitive. A sheet key e
 
 ---
 
-## 3. What a sheet source must send
+## 3. The game system API
+
+Other extensions reach the packs through `window.RollDice.system`:
+
+| Call | Returns |
+|---|---|
+| `list()` | `[{ id, name, builtIn }]` |
+| `get(id)` / `active()` / `activeId()` | A normalized pack (`get` falls back to the default pack) / the open chat's pack / its id |
+| `normalize(pack)` | The pack with missing keys filled from its base pack |
+| `test(pack, value, { dc, roll, extra })` | Rolls a check: `{ dice, sum, value, total, target, test, success, crit, margin, natural, level? }`. Extended dice add `{ extended: true, pool, kept, kinds, worth, symbols }`. `dc` is the target number for `over` packs and pools. `roll(sides)` lets the caller supply the dice. `extra` asks for bonus (+) or penalty (−) dice. |
+| `read(pack, dice, value, dc)` | Reads plain dice that are already rolled. |
+| `describe(result, pack)` | The log text of a result. |
+| `chance(pack, value, dc)` | The chance (0–1) that a check succeeds. |
+| `critLists(pack, value)` / `critBounds(pack, value)` | The critical totals as list text / the skill-based bounds. They are empty for pools and symbol criticals. |
+| `diceText(pack)` | How the pack rolls, in a few words: `"3d6"`, `"4d3 (faces -1 0 1)"`, `"a pool of d6 … sized by the skill"`, `"a mixed pool (good, bad)"` |
+| `statMod`, `statScore`, `statRole`, `evalStatMod` | Attribute helpers (see `stats` above). |
+| `setChatPack(id)`, `setDefaultPack(id)`, `chatPackId()`, `defaultPackId()` | Choose packs. |
+
+Sheet rolls from Roll Dice's own popup use `test` and `describe` when the pack has extended dice, so they roll the same dice as Combat Mode.
+
+## 4. What a sheet source must send
 
 Extensions register with `window.RollDice.registerSource({ id, label, getCharacters })`. `getCharacters()` returns entries like this:
 
@@ -107,7 +167,7 @@ A character with neither rollables nor combat entries isn't offered.
 
 ---
 
-## Example
+## Examples
 
 A 3d6 roll-under pack with skill-based criticals, no defense against a critical hit, retreat on, one block and one parry per turn (more parries at −4 each) and no parry against ranged attacks:
 
@@ -121,3 +181,43 @@ A 3d6 roll-under pack with skill-based criticals, no defense against a critical 
   "stats": { "strength": ["Str"], "agility": ["Dex"], "mind": ["Int"], "health": ["Con"], "will": ["Will"], "perception": ["Per"] }
 }
 ```
+
+Four three-sided dice worth −1, 0 and +1, added to the bonus, with opposed defense rolls:
+
+```json
+{
+  "base": "generic-d20", "test": "over",
+  "dice": { "count": 4, "die": 3, "faces": [-1, 0, 1] },
+  "crit": { "mode": "none" }, "checks": { "easy": -1, "normal": 0, "hard": 2 },
+  "defense": { "model": "opposed", "names": ["dodge"], "ties": "defender" },
+  "levels": [{ "name": "strong", "atLeast": "3" }]
+}
+```
+
+A pool of six-sided dice, one die per point of the value, where 5 and 6 are hits, a pool must reach the DC, and every die showing 1 counts as a slip (a critical failure when half the dice or more show it):
+
+```json
+{
+  "base": "generic-d20",
+  "dice": { "die": 6, "pool": "{VALUE}", "faces": [{ "slip": 1 }, 0, 0, 0, 1, 1] },
+  "crit": { "mode": "symbol", "failure": "slip", "failureAt": "ceil({DICE} / 2)" },
+  "defense": { "model": "opposed", "names": ["dodge"] },
+  "checks": { "easy": 1, "normal": 2, "hard": 4 }
+}
+```
+
+A mixed pool: good dice from the value, bad dice from the DC, and symbols that cancel. One net hit is a success, and a star is a critical success:
+
+```json
+{
+  "base": "generic-d20",
+  "dice": { "need": "1", "kinds": {
+    "good": { "die": 6, "count": "{VALUE}", "faces": [{}, { "hit": 1 }, { "hit": 1 }, { "boon": 1 }, { "hit": 1, "boon": 1 }, { "hit": 1, "star": 1 }] },
+    "bad":  { "die": 6, "count": "{DC}",    "faces": [{}, { "miss": 1 }, { "miss": 1 }, { "bane": 1 }, { "miss": 1, "bane": 1 }, { "miss": 1, "doom": 1 }] } } },
+  "symbols": { "total": "hit", "cancel": [["hit", "miss"], ["boon", "bane"]] },
+  "crit": { "mode": "symbol", "success": "star", "failure": "doom" },
+  "defense": { "model": "passive", "passiveBase": 1, "passiveStat": "" }
+}
+```
+
+In the mixed pool, the target's passive defense number (here 1 + nothing) is the `{DC}`, so it sets how many bad dice are rolled. Combat Mode formulas can read `{S_boon}`, `{S_bane}`, `{S_star}` and `{S_doom}` from the attack roll.
