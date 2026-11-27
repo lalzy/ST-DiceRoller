@@ -11,17 +11,17 @@ This file describes exactly what the code reads (`src/system/packs.js`, `src/sys
 
 ## 1. Settings for rolling by hand
 
-These are set per preset (**Skill** and **Combat**). They're used only by the roll popup when you roll by hand. **Custom dice** starts from the Skill preset (dice, comparison, critical totals) until you have rolled once; after that it opens on the dice you used last. Each line of dice has its own modifier, and the critical totals are checked against the dice alone.
+These are set per preset (**Skill** and **Combat**). Only the **Skill** preset is read. **Custom dice** starts from its dice and comparison until you have rolled once, then opens on the dice you used last; its critical totals are always checked. The **Combat** preset is stored but no roll uses it. Each line of dice has its own modifier, and the critical totals are checked against the dice alone.
 
 | Setting | Default | Meaning |
 |---|---|---|
 | Number of dice, die type | Skill: 3d6 · Combat: 1d20 | Die types: 1, 2, 3, 4, 6, 8, 10, 12, 20, 100. Count: 1–100. |
 | Comparison | Skill `<=` · Combat `>=` | `>`, `>=`, `<`, `<=` against the Versus number. |
 | Critical success / failure totals | empty | Lists like `3-4` or `17-18`, separated by commas. They are checked before the comparison. |
-| Minimum damage | empty (0) | The lowest a damage roll totals, before armor. |
-| Minimum injury | empty (0) | The lowest injury once damage gets through armor. |
+| Minimum damage | empty (0) | The lowest a damage roll totals, before armor. Hand and sheet damage rolls. |
+| Minimum injury | empty (0) | The lowest injury once damage gets through armor. Hand and sheet damage rolls. |
 
-Rolls made **from a sheet** use the chat's game system pack instead of these settings. Damage dice keep their own die size.
+Rolls made **from a sheet** use the chat's game system pack instead of the dice, comparison and critical settings. Minimum damage and Minimum injury still apply to them. Damage dice keep their own die size.
 
 ---
 
@@ -49,7 +49,7 @@ When a pack is read:
 | `test` | `"under"` | `under`: the dice total must be ≤ the value (skill). `over`: dice + value (bonus) must be ≥ the target number. |
 | `crit.mode` | `"none"` | `total` (the dice sum is checked against the lists) · `natural` (the first die's face; with more than one die it becomes `total`) · `none` |
 | `crit.success` / `crit.failure` | `""` | Totals like `"3-4"` or `"17-18"`. A critical overrides success or failure. |
-| `crit.successMax` / `crit.failureMin` | `""` | Critical ranges that move with skill: a formula on `{SKILL}` (the value rolled with). A roll at or below `successMax` is a critical success, at or above `failureMin` a critical failure, on top of the lists. Formulas: numbers, `{SKILL}`, `+ - * /`, brackets, `floor ceil round abs min max`. Example: `"successMax": "4 + min(2, max(0, {SKILL} - 14))"`, `"failureMin": "min(18, {SKILL} + 10)"`. A broken formula is ignored. |
+| `crit.successMax` / `crit.failureMin` | `""` | Critical ranges that move with skill: a formula on `{SKILL}` (the value rolled with). A roll at or below `successMax` is a critical success, at or above `failureMin` a critical failure, on top of the lists. Formulas: numbers, `{SKILL}`, `+ - * /`, brackets, `floor ceil round abs min max`. Example: `"successMax": "4 + min(2, max(0, {SKILL} - 14))"`, `"failureMin": "min(18, {SKILL} + 10)"`. A broken formula is ignored. They only count when `crit.mode` is `total` or `natural` (the Classic 3d6 base is `none`, so set `mode`). |
 | `crit.effect` | `"none"` | What a critical **hit** does: `none` · `double` (damage dice doubled) · `max` (damage dice at maximum) · `nodefense` (the target can't defend) |
 | `defense.model` | `"active"` | `active`: the defender rolls one of `names`. `passive`: the attack must reach a number (the sheet's `ac`, else `passiveBase` + the stat modifier of `passiveStat`). |
 | `defense.names` | `["dodge","parry","block"]` | Defense words matched against the sheet's defense entries. |
@@ -58,7 +58,7 @@ When a pack is read:
 | `defense.against` | none | `{ "melee": [...], "ranged": [...] }`: which defenses work against each kind of attack. A kind that's missing allows every defense. An ability's own *Defended by* wins. |
 | `defense.perTurn` | none | `{ "parry": 1 }`: how often each defense can be used between the defender's turns. A missing name means no limit. |
 | `defense.again` | none | `{ "parry": -4 }`: a defense past its limit is still allowed at this modifier per extra use. If missing, it isn't allowed. |
-| `armor` | `"reduce"` | `reduce`: armor subtracts from damage. `class`: armor adds to the passive defense. |
+| `armor` | `"reduce"` | `reduce`: armor subtracts from damage. `class`: armor adds to the passive defense in Combat Mode. Roll Dice's own attack rolls (the popup) don't add armor: the target is the sheet's `ac`, else `passiveBase` + the stat modifier. |
 | `damage.multipliers` | `true` | Use the sheet's wound multipliers. |
 | `damage.bonus.melee` / `ranged` | `""` | A stat role whose modifier is added to damage. |
 | `damage.bonus.weapons` | `[]` | `[{ "match": "finesse", "stats": ["strength","agility"] }]`: a weapon whose name or stat text has the word `match` adds the best of `stats` instead. |
@@ -79,13 +79,13 @@ Combat Mode and sheet rolls find attributes by **role**. The engine uses six rol
 - `will`: resisting threats, losing a spell.
 - `perception`.
 
-Each role lists the sheet **keys** that fill it, case-insensitive. The first one that exists on the sheet is used.
+Each role lists the sheet **keys** that fill it, case-insensitive. A sheet key equal to the role name also fills it. Combat Mode uses the first name **in the list** that exists on the sheet. Roll Dice's own rolls (the passive defense stat) use the first **sheet key** that matches any name in the list. To get the same result in both, give each role names that match only one key on the sheet.
 
 - If a pack **has** `stats`, it defines exactly its roles. Roles it leaves out are empty.
 - If a pack has **no** `stats`, it gets the built-in names: Strength/Str, Agility/Agi/Dexterity/Dex, Mind/Intellect/Int, Health/Body/Constitution/Con, Will/Resolve, Perception/Awareness.
-- **A role that finds no attribute rolls against 10, with no warning.** If your sheet uses keys like `ST/DX/IQ/HT/Per`, you need a custom pack that lists them.
+- **A role that finds no attribute rolls against 10, with no warning** (Combat Mode). In Roll Dice's popup, a `passiveStat` that finds no attribute adds 0 to `passiveBase`. If your sheet uses keys like `ST/DX/IQ/HT/Per`, you need a custom pack that lists them.
 
-`statMod` formulas allow numbers, `score`, `+ - * /`, brackets, `floor ceil round abs min max`. A formula that doesn't parse falls back to `score`.
+`statMod` formulas allow numbers, `score`, `+ - * /`, brackets, `floor ceil round abs min max`. An unknown word or character (including `SCORE` or `{score}`) makes the formula fall back to `score`. A missing `)` is read as if it were there, and text after a complete formula is ignored (`(score - 10) / 2 foo` reads as `(score - 10) / 2`).
 
 ---
 
