@@ -13,34 +13,19 @@ function store() {
     all[MODULE] ||= {};
     // saved as written: missing keys are filled, custom packs are normalized only when read
     const s = all[MODULE].system && typeof all[MODULE].system === 'object' ? all[MODULE].system : (all[MODULE].system = {});
-    if (s.pack === undefined) s.pack = DEFAULT_PACK.id;
-    if (!Array.isArray(s.custom)) s.custom = [];
     if (!isTemplateStore(s.rulesTemplates)) {
-        // older settings: custom packs (named by the id / name inside their JSON) become rules templates
-        // (s.pack and s.custom stay as they were, for downgrades)
-        s.rulesTemplates = migrate(s.custom, s.pack);
+        s.rulesTemplates = { active: DEFAULT_PACK.id, items: {} };
         c.saveSettingsDebounced?.();
     }
     return s;
 }
 
-const testStore = { pack: DEFAULT_PACK.id, custom: [], rulesTemplates: { active: DEFAULT_PACK.id, items: {} } };
+const testStore = { rulesTemplates: { active: DEFAULT_PACK.id, items: {} } };
 
 /** A pack without its id and name: those come from the template. */
 export function packRules(p) {
     const { id, name, ...rest } = p && typeof p === 'object' ? p : {};
     return structuredClone(rest);
-}
-
-function migrate(custom, pack) {
-    const items = {};
-    for (const raw of custom) {
-        const p = normalizePack(raw);
-        if (BUILT_IN.some(b => b.id === p.id) || items[p.id]) continue;
-        items[p.id] = { name: p.name, rules: packRules(raw), updatedAt: Date.now() };
-    }
-    const active = BUILT_IN.some(b => b.id === pack) || items[pack] ? String(pack) : DEFAULT_PACK.id;
-    return { active, items };
 }
 
 /** The rules templates (shared block): { active, items: { [id]: { name, rules } } }. active = the default pack. */
@@ -67,9 +52,7 @@ export function getPack(id) {
 
 export const defaultPackId = () => templateStore().active || DEFAULT_PACK.id;
 export function setDefaultPack(id) {
-    const s = store();
-    s.rulesTemplates.active = String(id || DEFAULT_PACK.id);
-    s.pack = s.rulesTemplates.active; // kept in step for downgrades
+    store().rulesTemplates.active = String(id || DEFAULT_PACK.id);
     save();
     announce();
 }
