@@ -82,13 +82,45 @@ All optional. A pack without them rolls exactly as described above. A pack uses 
 | `dice.pool` | A formula on `{VALUE}` (the value rolled with: the skill, attribute or bonus, modifiers included) and `{DC}` (the target number): how many dice are rolled, 0–100. The value then **sizes the pool and is not added** to the total. Example: `"{VALUE}"`. |
 | `dice.keep` | How many dice count. The rest are rolled but dropped (shown in brackets in the log). |
 | `dice.keepFrom` | `best` (the default: the highest for `over`, the lowest for `under`) · `highest` · `lowest`. |
-| `dice.kinds` | `{ "name": { "die": 6, "faces": [...], "count": "formula" } }`: a pool of several kinds of dice, each with its own die size and faces. `count` is a formula on `{VALUE}` and `{DC}`. It replaces `dice.count` / `dice.die` / `dice.pool`. |
+| `dice.kinds` | `{ "name": { "die": 6, "faces": [...], "count": "formula" } }`: a pool of several kinds of dice, each with its own die size and faces. `count` is a formula on `{VALUE}`, `{DC}` and the pack's `dice.vars`. It replaces `dice.count` / `dice.die` / `dice.pool`. See *Mixed pools*. |
+| `dice.vars` | `["CHAR", "SKILL", "UPGRADE"]`: more variable names the kinds' `count` formulas may use. A roll gives their values (`vars`); missing ones are 0. |
 | `dice.need` | Pools only: a formula on `{VALUE}` and `{DC}`, the total the pool must reach. Default: the DC (the attack's target number, a save's DC), else `checks.normal`. Set it (e.g. `"1"`) when `{DC}` is used to size a kind of dice instead. |
 | `symbols.total` | The symbol whose net count is the total. Numeric faces add to it. Without `total`, only numeric faces add to the total; symbol faces only show in `symbols` (and can make a symbol critical). |
 | `symbols.cancel` | `[["hit", "miss"], ["boon", "bane"]]`: each pair cancels one for one, and what is left of each is its net count. Net counts are in the result's `symbols`. |
+| `spend` | `[{ "name", "symbol", "cost", "text" }]`: what a roll's left-over symbols can buy (`cost`: how many of that symbol, default 1). The result lists what it can afford as `spendable: [{ name, symbol, cost, times, text }]`. Roll Dice buys nothing itself: the game decides (Combat Mode: a trigger at the `roll` stage reads `{S_<symbol>}`; by hand, the GM). |
 | `crit.mode: "symbol"` | `crit.success` / `crit.failure` name a symbol. The roll is critical when its net count reaches `crit.successAt` / `crit.failureAt` (formulas on `{DICE}`, the number of dice rolled; default 1). A failure symbol that a cancel pair removed still counts by its raw number on the kept dice. |
 
 **Bonus and penalty dice.** Anything that rolls through the pack can ask for `extra` dice (Combat Mode: the `dice` modifier). For a plain or kept roll, `+n` rolls n more dice and keeps the same number of the best ones; `−n` rolls n more and keeps the worst ones. In a pool, `extra` adds or takes away dice (never fewer than 0).
+
+**Mixed pools: a count and a modifier for each kind.** Each kind of die has its own count and its own modifier, so nothing has to be packed into one number:
+- `count` formulas can read named variables (`dice.vars`), e.g. a characteristic and a skill rank given separately.
+- A roll can add or take away dice **of one kind**: `kinds: { "boost": 1, "setback": 2 }` (Combat Mode: the modifier keys `pool_<kind>`, from conditions, situations, macros).
+- A roll can give a kind's count outright: `pool: { "ability": 2, "proficiency": 1 }` (a sheet row's own `pool`); `count` is not used for that kind then.
+- `extra` as a number adds or takes away dice of the first kind; as `{ kind: n }` it is the same as `kinds`.
+
+```json
+{
+  "id": "my-pool", "name": "Narrative pool", "test": "over",
+  "dice": {
+    "need": "1", "vars": ["CHAR", "SKILL", "UPGRADE"],
+    "kinds": {
+      "ability":     { "die": 8,  "faces": [{}, {"success":1}, {"success":1}, {"success":2}, {"advantage":1}, {"advantage":1}, {"success":1,"advantage":1}, {"advantage":2}], "count": "max({CHAR}, {SKILL}) - min({CHAR}, {SKILL}) - min({UPGRADE}, max({CHAR}, {SKILL}) - min({CHAR}, {SKILL}))" },
+      "proficiency": { "die": 12, "faces": [{}, {"success":1}, {"success":1}, {"success":2}, {"success":2}, {"advantage":1}, {"success":1,"advantage":1}, {"success":1,"advantage":1}, {"success":1,"advantage":1}, {"advantage":2}, {"advantage":2}, {"triumph":1,"success":1}], "count": "min({CHAR}, {SKILL}) + {UPGRADE}" },
+      "boost":       { "die": 6,  "faces": [{}, {}, {"success":1}, {"success":1,"advantage":1}, {"advantage":2}, {"advantage":1}], "count": "0" },
+      "difficulty":  { "die": 8,  "faces": [{}, {"failure":1}, {"failure":2}, {"threat":1}, {"threat":1}, {"threat":1}, {"threat":2}, {"failure":1,"threat":1}], "count": "{DC}" },
+      "setback":     { "die": 6,  "faces": [{}, {}, {"failure":1}, {"failure":1}, {"threat":1}, {"threat":1}], "count": "0" }
+    }
+  },
+  "symbols": { "total": "success", "cancel": [["success", "failure"], ["advantage", "threat"]] },
+  "crit": { "mode": "symbol", "success": "triumph", "failure": "despair" },
+  "spend": [
+    { "name": "Recover 1 strain", "symbol": "advantage", "cost": 1 },
+    { "name": "A free maneuver", "symbol": "advantage", "cost": 2 },
+    { "name": "Lose a maneuver", "symbol": "threat", "cost": 2 }
+  ]
+}
+```
+→ A check with `vars: { CHAR: 3, SKILL: 2 }`, `dc: 2` and `kinds: { setback: 1 }` rolls 1 ability, 2 proficiency, 2 difficulty and 1 setback die. With `UPGRADE: 1`, one ability die becomes proficiency. Three advantage left over: `spendable` lists *Recover 1 strain* ×3 and *A free maneuver* ×1. (The faces and names here are only an example: write your own.)
 
 **How it reads.** A pool succeeds when its total is at or above `dice.need`, and the margin is total − need. A non-pool roll with faces or kept dice reads like a plain one: `over` adds the value and compares with the target number, `under` compares the total with the value.
 
@@ -138,9 +170,9 @@ Other extensions reach the packs through `window.RollDice.system`:
 | `list()` | `[{ id, name, builtIn }]` |
 | `get(id)` / `active()` / `activeId()` | A normalized pack (`get` falls back to the default pack) / the open chat's pack / its id |
 | `normalize(pack)` | The pack with missing keys filled from its base pack |
-| `test(pack, value, { dc, roll, extra })` | Rolls a check: `{ dice, sum, value, total, target, test, success, crit, margin, natural, level? }`. Extended dice add `{ extended: true, pool, kept, kinds, worth, symbols }`. `dc` is the target number for `over` packs and pools. `roll(sides)` lets the caller supply the dice. `extra` asks for bonus (+) or penalty (−) dice. |
+| `test(pack, value, { dc, roll, extra, vars, kinds, pool })` | Rolls a check: `{ dice, sum, value, total, target, test, success, crit, margin, natural, level? }`. Extended dice add `{ extended: true, pool, kept, kinds, worth, symbols, spendable? }`. `dc` is the target number for `over` packs and pools. `roll(sides)` lets the caller supply the dice. `extra` asks for bonus (+) or penalty (−) dice. `vars`, `kinds`, `pool`: see *Mixed pools*. |
 | `read(pack, dice, value, dc)` | Reads plain dice that are already rolled. |
-| `describe(result, pack)` | The log text of a result. |
+| `describe(result, pack)` | The log text of a result. A result with `parts` (`[{ label, n }]`: what its value is made of) shows each one by name, and `dcParts` does the same for a fixed target number: `6 + 1 + 1 = 8 vs 10 (Punch) + 1 (Blessed) - 4 (lying down) = 7 · failure by 1`, `10 + 5 (Mace) + 2 (aim) = 17 vs AC 12 (ogre) - 3 (lying down) = 9`. Combat Mode fills them in. |
 | `chance(pack, value, dc)` | The chance (0–1) that a check succeeds. |
 | `critLists(pack, value)` / `critBounds(pack, value)` | The critical totals as list text / the skill-based bounds. They are empty for pools and symbol criticals. |
 | `diceText(pack)` | How the pack rolls, in a few words: `"3d6"`, `"4d3 (faces -1 0 1)"`, `"a pool of d6 … sized by the skill"`, `"a mixed pool (good, bad)"` |
@@ -156,12 +188,14 @@ Extensions register with `window.RollDice.registerSource({ id, label, getCharact
 ```
 { key, name, prefix?,
   rollables: [{ group, name, target }],                  // group "Attributes" entries are also read as attributes
-  combat:   [{ group, kind: "roll", name, target, note? },                         // attacks, defenses, abilities
+  combat:   [{ group, kind: "roll", name, target, note?, pool?, poolVars? },      // attacks, defenses, abilities; pool / poolVars: mixed pools
              { group, kind: "damage", name, n, sides, add, type, mult, more? }],    // damage, linked to attacks by name
-  hp?, fp?, move?, speed?, dr?, ac?, attrs?: { key: number }, resources?: [{ name, max }], macros?: [{ name, arg, args?, from }], macroDefs?: [definition] }
+  hp?, fp?, move?, speed?, dr?, ac?, attrs?: { key: number }, resources?: [{ name, max }], macros?: [{ name, arg, args?, from, row? }], macroDefs?: [definition] }
 ```
 
 `macros` are the home-brew macros found on the sheet (`{{haste}}` → `{ name: "haste", arg: "", args: [] }`, `{{immunity cold}}` → `{ name: "immunity", arg: "cold", args: ["cold"] }`). `macroDefs` are the definitions that say what they do. Roll Dice passes both through unchanged; Combat Mode applies them (see NPC-Book-Combat/RULES.md → `macros`).
+
+`from` is the row a macro is written on and `row` what kind of row (`trait`, `item`, `ability`, `attack`): Combat Mode applies a macro on an ability or attack to that row only. For a mixed pool pack, a `combat` entry may give its own dice counts (`pool: { "ability": 2, "proficiency": 1 }`) and values for the pack's `dice.vars` (`poolVars: { "CHAR": 3, "SKILL": 2 }`).
 
 A character with neither rollables nor combat entries isn't offered.
 

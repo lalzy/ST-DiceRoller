@@ -29,7 +29,7 @@
 //   labels    words used in logs and prompts
 
 import { evalSkillFormula } from './formula.js';
-import { normalizeDiceExtras, normalizeSymbols, normalizeLevels, isPool, formulaOk } from './pool.js';
+import { normalizeDiceExtras, normalizeSymbols, normalizeLevels, normalizeSpend, isPool, formulaOk } from './pool.js';
 
 export const STAT_ROLES = ['strength', 'agility', 'mind', 'health', 'will', 'perception'];
 
@@ -203,6 +203,7 @@ export function normalizePack(p) {
     }
     if (out.dice.count > 1 && out.crit.mode === 'natural' && !out.dice.keep) out.crit.mode = 'total';
     out.symbols = normalizeSymbols(src.symbols);
+    out.spend = normalizeSpend(src.spend ?? base.spend);
     out.levels = normalizeLevels(src.levels);
     // a pool counts up to a target: it is always read as "meet or beat"
     if (isPool(out)) out.test = 'over';

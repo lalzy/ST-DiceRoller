@@ -9,7 +9,15 @@
 //   dice.keep     how many dice count (the best ones). dice.keepFrom: 'best' (default: highest for `over`, lowest for
 //                 `under`) · 'highest' · 'lowest'. Bonus / penalty dice (a roll's `extra`) roll more dice and keep the
 //                 same number: the best for a bonus, the worst for a penalty. In a pool, `extra` adds or removes dice.
-//   dice.kinds    { name: { die, faces, count } }: a pool of several kinds of dice; `count` is a formula on {VALUE} {DC}.
+//   dice.kinds    { name: { die, faces, count } }: a pool of several kinds of dice; `count` is a formula on {VALUE} {DC}
+//                 and the pack's own variables (dice.vars). Each kind also gets its own modifier: a roll's
+//                 opts.kinds = { name: +n / −n } (a boost die, a setback die, an upgrade…), never packed into one number.
+//                 A roll can also give the counts outright: opts.pool = { name: n } (then `count` isn't used for them).
+//   dice.vars     ['CHAR', 'SKILL', 'UPGRADE', …]: more variable names the kinds' count formulas may use; a roll gives
+//                 their values in opts.vars ({ CHAR: 3, SKILL: 2 }); missing ones are 0.
+//   spend         [{ name, symbol, cost, text }]: what a roll's left-over symbols can buy (advantage → a free maneuver,
+//                 threat → lose a turn's action…). Read only: the result lists what it can afford (`spendable`); the
+//                 game (Combat Mode triggers at stage 'roll', the GM) decides what is bought.
 //   dice.need     formula on {VALUE} {DC}: the total a pool must reach (default: the DC, else checks.normal).
 //   symbols       { total: name, cancel: [[a, b], …] }: the symbol whose count is the total; each pair cancels one for
 //                 one (what is left of each is the net count, shown in the result's `symbols`).
@@ -99,10 +107,12 @@ export function normalizeDiceExtras(src, base) {
     if (d.pool !== undefined && d.pool !== null && String(d.pool).trim() !== '' && formulaOk(d.pool, ['VALUE', 'DC'])) out.pool = String(d.pool).trim();
     if (Number(d.keep) > 0) out.keep = Math.min(100, Math.floor(Number(d.keep)));
     if (['highest', 'lowest'].includes(d.keepFrom)) out.keepFrom = d.keepFrom;
+    const vars = (Array.isArray(d.vars) ? d.vars : []).map(v => String(v).trim().toUpperCase()).filter(v => /^[A-Z_][A-Z0-9_]*$/.test(v) && v !== 'VALUE' && v !== 'DC');
+    if (vars.length) out.vars = [...new Set(vars)];
     if (isObj(d.kinds)) {
         const kinds = {};
         for (const [name, k] of Object.entries(d.kinds)) {
-            if (!symKey(name) || !isObj(k) || !formulaOk(k.count ?? '0', ['VALUE', 'DC'])) continue;
+            if (!symKey(name) || !isObj(k) || !formulaOk(k.count ?? '0', ['VALUE', 'DC', ...vars])) continue;
             const s = die(k.die);
             kinds[symKey(name)] = { die: s, faces: facesOf(k.faces, s), count: String(k.count ?? '0').trim() || '0' };
         }
@@ -119,6 +129,17 @@ export function normalizeSymbols(s) {
     return { total: symKey(S.total || ''), cancel };
 }
 
+/** pack.spend: [{ name, symbol, cost, text }] (cost: how many of that symbol, default 1). */
+export function normalizeSpend(list) {
+    return (Array.isArray(list) ? list : []).filter(x => isObj(x) && String(x.name || '').trim() && symKey(x.symbol || ''))
+        .map(x => ({ name: String(x.name).trim(), symbol: symKey(x.symbol), cost: Math.max(1, Math.floor(Number(x.cost) || 1)), text: String(x.text || '').trim() }));
+}
+
+/** What a result's symbols can buy (pack.spend): [{ name, symbol, cost, times, text }] with times ≥ 1. */
+export function spendable(p, symbols) {
+    return (p?.spend || []).map(x => ({ ...x, times: Math.floor((Number(symbols?.[x.symbol]) || 0) / x.cost) })).filter(x => x.times > 0);
+}
+
 export function normalizeLevels(list) {
     return (Array.isArray(list) ? list : []).filter(x => isObj(x) && String(x.name || '').trim() && formulaOk(x.atLeast ?? '', ['VALUE', 'TARGET']))
         .map(x => ({ name: String(x.name).trim(), atLeast: String(x.atLeast).trim() }));
@@ -131,15 +152,27 @@ export const isPool = (p) => !!(p?.dice?.pool || p?.dice?.kinds);
 
 const clampCount = (n) => Math.max(0, Math.min(100, Math.floor(Number(n) || 0)));
 
-/** The dice to roll: [{ kind, die, faces }] and how many count (keep, best | worst | null). */
-export function poolSpec(p, value, dc, extra = 0) {
+/** { name: n } with lower-case kind names and whole numbers (bad entries dropped). */
+const kindMap = (o) => (isObj(o) ? Object.fromEntries(Object.entries(o).filter(([k, v]) => symKey(k) && Number.isFinite(Number(v))).map(([k, v]) => [symKey(k), Math.trunc(Number(v))])) : {});
+
+/**
+ * The dice to roll: [{ kind, die, faces }] and how many count (keep, best | worst | null).
+ * more: { vars: { NAME: n } (the pack's dice.vars), kinds: { kind: ±n } (a modifier per kind), pool: { kind: n } (counts
+ * given outright) }. `extra` as a number: + / − dice of the first kind (or bonus / penalty dice); as an object: per kind.
+ */
+export function poolSpec(p, value, dc, extra = 0, more = {}) {
     const vars = { VALUE: Number(value) || 0, DC: Number.isFinite(Number(dc)) ? Number(dc) : p.checks.normal };
-    const x = Math.trunc(Number(extra) || 0);
+    for (const name of p.dice.vars || []) vars[name] = Number(more?.vars?.[name] ?? more?.vars?.[name.toLowerCase()]) || 0;
+    const perKind = { ...kindMap(isObj(extra) ? extra : {}) };
+    for (const [k, n] of Object.entries(kindMap(more?.kinds))) perKind[k] = (perKind[k] || 0) + n;
+    const given = kindMap(more?.pool);
+    const x = isObj(extra) ? 0 : Math.trunc(Number(extra) || 0);
     if (p.dice.kinds) {
         const dice = [];
         let first = true;
         for (const [kind, k] of Object.entries(p.dice.kinds)) {
-            const n = clampCount((evalVars(k.count, vars) ?? 0) + (first ? x : 0));
+            const base = kind in given ? given[kind] : (evalVars(k.count, vars) ?? 0);
+            const n = clampCount(base + (first ? x : 0) + (perKind[kind] || 0));
             first = false;
             for (let i = 0; i < n; i++) dice.push({ kind, die: k.die, faces: k.faces });
         }

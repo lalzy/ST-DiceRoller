@@ -96,3 +96,37 @@ test('sheet rolls from the popup use the pack\'s own dice when it has extended d
     assert.ok(args.system);
     assert.equal(buildRollText(args, [6, 6, 1, 2]), 'Sneak Roll (a pool of d6 (faces 0 0 0 0 1 1) sized by the bonus): 6=1 6=1 1=0 2=0 → 2 vs DC 2 (Success)');
 });
+
+test('mixed pool: a count per kind from named variables and a modifier per kind (no packing into one number), spend list', () => {
+    const plus = [{}, { hit: 1 }, { hit: 1 }, { boon: 1 }, { hit: 1, boon: 1 }, { hit: 2 }];
+    const big = [{}, { hit: 1 }, { hit: 2 }, { boon: 2 }, { hit: 1, boon: 1 }, { star: 1, hit: 1 }];
+    const minus = [{}, { miss: 1 }, { miss: 1 }, { bane: 1 }, { miss: 1, bane: 1 }, { miss: 2 }];
+    const p = normalizePack({
+        test: 'over',
+        dice: {
+            need: '1', vars: ['CHAR', 'SKILL', 'UPGRADE'],
+            kinds: {
+                // the larger of the two in dice, the smaller of them upgraded; upgrades move dice up
+                good: { die: 6, faces: plus, count: 'max({CHAR}, {SKILL}) - min({CHAR}, {SKILL}) - min({UPGRADE}, max({CHAR}, {SKILL}) - min({CHAR}, {SKILL}))' },
+                great: { die: 6, faces: big, count: 'min({CHAR}, {SKILL}) + {UPGRADE}' },
+                bad: { die: 6, faces: minus, count: '{DC}' },
+                small: { die: 6, faces: plus, count: '0' },
+                hinder: { die: 6, faces: minus, count: '0' },
+            },
+        },
+        symbols: { total: 'hit', cancel: [['hit', 'miss'], ['boon', 'bane']] },
+        crit: { mode: 'symbol', success: 'star' },
+        spend: [{ name: 'Extra maneuver', symbol: 'boon', cost: 2 }, { name: 'Recover strain', symbol: 'boon', cost: 1, text: '1 strain back' }],
+    });
+    // CHAR 3, SKILL 1: 2 good + 1 great; DC 1: 1 bad; one boost die (small +1) and one setback (hinder +1)
+    const r = check(p, 0, { dc: 1, vars: { CHAR: 3, SKILL: 1 }, kinds: { small: 1, hinder: 1 }, roll: seq(4, 4, 4, 2, 1, 1) });
+    assert.deepEqual(r.kinds, ['good', 'good', 'great', 'bad', 'small', 'hinder']);
+    assert.deepEqual(r.symbols, { boon: 4, miss: 1 });
+    assert.deepEqual(r.spendable.map(x => `${x.name}×${x.times}`), ['Extra maneuver×2', 'Recover strain×4']);
+    // an upgrade: one good die becomes great
+    const u = check(p, 0, { dc: 0, vars: { CHAR: 3, SKILL: 1, UPGRADE: 1 }, roll: seq(1, 1, 1) });
+    assert.deepEqual(u.kinds, ['good', 'great', 'great']);
+    // counts given outright
+    const g = check(p, 0, { dc: 0, pool: { good: 1, bad: 2 }, vars: { CHAR: 0, SKILL: 0 }, roll: seq(1, 1, 1) });
+    assert.deepEqual(g.kinds, ['good', 'bad', 'bad']);
+});

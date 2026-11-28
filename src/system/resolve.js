@@ -3,7 +3,7 @@ import { rollDie as cryptoDie } from '../rolls/dice.js';
 import { parseTotals } from '../rolls/verdict.js';
 import { normalizePack } from './packs.js';
 import { evalSkillFormula } from './formula.js';
-import { isExtended, isPool, poolSpec, readPool, levelOf, evalVars, diceText } from './pool.js';
+import { isExtended, isPool, poolSpec, readPool, levelOf, evalVars, diceText, spendable } from './pool.js';
 
 export { diceText };
 
@@ -37,7 +37,10 @@ const sum = (a) => a.reduce((x, y) => x + y, 0);
  * Roll a check.
  * @param {object} pack a normalized pack
  * @param {number} value the skill / attribute (test 'under') or the bonus (test 'over'), modifiers included
- * @param {{dc?: number, roll?: (sides:number)=>number}} [opts] dc: target number for 'over' (default checks.normal)
+ * @param {{dc?: number, roll?: (sides:number)=>number, extra?: number|object, vars?: object, kinds?: object, pool?: object}} [opts]
+ *   dc: target number for 'over' (default checks.normal) · extra: bonus / penalty dice (or { kind: ±n }) · vars: the pack's
+ *   dice.vars values ({ CHAR: 3, SKILL: 2 }) · kinds: a modifier per die kind ({ boost: 1, setback: 2 }) · pool: counts
+ *   per kind given outright
  * @returns {{dice:number[], sum:number, value:number, total:number, target:number, test:string, success:boolean,
  *            crit:null|'success'|'failure', margin:number, natural:number}}
  */
@@ -45,8 +48,8 @@ export function test(pack, value, opts = {}) {
     const p = pack?.test ? pack : normalizePack(pack);
     const roll = typeof opts.roll === 'function' ? opts.roll : cryptoDie;
     // custom faces, pools, kept dice, mixed kinds, bonus / penalty dice (opts.extra: + more dice keep the best, − the worst)
-    if (isExtended(p) || Number(opts.extra)) {
-        const spec = poolSpec(p, Number(value) || 0, opts.dc, opts.extra);
+    if (isExtended(p) || Number(opts.extra) || (opts.extra && typeof opts.extra === 'object')) {
+        const spec = poolSpec(p, Number(value) || 0, opts.dc, opts.extra, { vars: opts.vars, kinds: opts.kinds, pool: opts.pool });
         const rolled = spec.dice.map(d => ({ spec: d, face: roll(d.die) }));
         return readExtended(p, rolled, spec, Number(value) || 0, opts.dc);
     }
@@ -92,6 +95,9 @@ export function readExtended(p, rolled, spec, value, dc) {
         success: crit ? crit === 'success' : passes, crit, margin, natural: keptFaces[0] ?? 0,
         extended: true, pool, kept: R.kept, kinds: rolled.map(r => r.spec.kind), worth: R.values, symbols: R.symbols,
     };
+    // what the left-over symbols can buy (pack.spend): the game decides what is bought
+    const buy = spendable(p, R.symbols);
+    if (buy.length) out.spendable = buy;
     return withLevel(p, out);
 }
 
@@ -121,7 +127,20 @@ export function read(p, dice, value, dc) {
 
 const signed = (n) => (n >= 0 ? `+ ${n}` : `- ${-n}`);
 
-/** "4 + 3 + 2 = 9 vs 12 · success by 3" (under) / "17 + 5 = 22 vs DC 15 · success by 7" (over). */
+/** A named part of a value: "+ 2 (aim)", "- 4 (lying down)"; the first one unsigned: "10 (Punch)". */
+const partText = (x, first) => `${first ? `${x.n}` : signed(x.n)}${x.label ? ` (${x.label})` : ''}`;
+/** "10 (Punch) - 4 (lying down) = 6": what a value is made of (r.parts / r.dcParts: [{ label, n }]). */
+const partsMath = (list, total) => `${list.map((x, i) => partText(x, i === 0)).join(' ')} = ${total}`;
+/** The bonus in an "over" roll: "+ 3 (Sword) + 2 (aim)", or "+ 5". */
+const bonusMath = (r) => (r.parts?.length ? ` ${r.parts.map(x => partText(x, false)).join(' ')}` : r.value ? ` ${signed(r.value)}` : '');
+/** The number to reach, with its parts when it has them. */
+const targetMath = (r) => (r.dcParts?.length ? `${partsMath(r.dcParts, r.target)}` : `${r.target}`);
+
+/**
+ * "4 + 3 + 2 = 9 vs 12 · success by 3" (under) / "17 + 5 = 22 vs DC 15 · success by 7" (over). A result with
+ * `parts` ([{ label, n }]: what its value is made of) shows every one: "6 + 1 + 1 = 8 vs 10 (Punch) - 4 (lying down)
+ * = 6 · failure by 2"; `dcParts` the same for a fixed target number.
+ */
 export function describe(r, pack) {
     const verdict = (r.crit ? `critical ${r.crit}` : r.success ? `success by ${r.margin}` : `failure by ${-r.margin}`) + (r.level ? ` (${r.level})` : '');
     if (r.extended) {
@@ -133,16 +152,20 @@ export function describe(r, pack) {
             return r.kept.includes(i) ? t : `(${t})`;
         });
         const sym = Object.keys(r.symbols || {}).length && (pack?.symbols?.cancel?.length || Object.keys(r.symbols).length > 1) ? ` [${Object.entries(r.symbols).map(([k, n]) => `${n} ${k}`).join(', ')}]` : '';
-        const math = r.pool ? `${r.total}` : r.test === 'over' ? `${r.sum}${r.value ? ` ${signed(r.value)}` : ''} = ${r.total}` : `${r.total}`;
+        const math = r.pool ? `${r.total}` : r.test === 'over' ? `${r.sum}${bonusMath(r)} = ${r.total}` : `${r.total}`;
         const label = r.test === 'over' ? (r.vsLabel || pack?.labels?.target || 'DC') : '';
-        return `${bits.join(' ')} → ${math}${sym} vs ${label ? `${label} ` : ''}${r.target} · ${verdict}`;
+        // a pool is sized by its value: show what the value is made of
+        const sized = r.pool && r.parts?.length ? ` (pool from ${partsMath(r.parts, r.value)})` : '';
+        const target = !r.pool && r.test !== 'over' && r.parts?.length ? partsMath(r.parts, r.target) : targetMath(r);
+        return `${bits.join(' ')} → ${math}${sym} vs ${label ? `${label} ` : ''}${target}${sized} · ${verdict}`;
     }
     if (r.test === 'over') {
         const label = pack?.labels?.target || 'DC';
-        const math = `${r.dice.join(' + ')}${r.value ? ` ${signed(r.value)}` : ''} = ${r.total}`;
-        return `${math} vs ${r.vsLabel || label} ${r.target} · ${verdict}`;
+        const math = `${r.dice.join(' + ')}${bonusMath(r)} = ${r.total}`;
+        return `${math} vs ${r.vsLabel || label} ${targetMath(r)} · ${verdict}`;
     }
-    return `${r.dice.join(' + ')} = ${r.total} vs ${r.target} · ${verdict}`;
+    // roll under: the number to roll under is the value, made of its parts
+    return `${r.dice.join(' + ')} = ${r.total} vs ${r.parts?.length ? partsMath(r.parts, r.target) : r.target} · ${verdict}`;
 }
 
 /** Distribution of the sum of `count` dice with `die` sides: Map sum → probability. */
